@@ -162,7 +162,7 @@ With an existing participant and a securely bootstrapped admin token, issue a
 token as follows. The `token` value appears only in this response:
 
 ```bash
-export API_BASE='https://gdg-remote-runtime.srijan-guchhait.workers.dev'
+export API_BASE='https://gdg.qwertystars.org'
 export ADMIN_TOKEN='<secure-admin-token>'
 
 curl --fail-with-body --request POST "$API_BASE/api/v1/admin/tokens" \
@@ -534,7 +534,7 @@ ranking math.
 ## Verified live deployment (2026-08-28)
 
 Deployed and proven end-to-end on the Cloudflare Workers **Paid** plan
-(Containers entitlement) at `gdg-remote-runtime.srijan-guchhait.workers.dev`:
+(Containers entitlement) at `gdg.qwertystars.org`:
 
 - `GET /api/v1/health` → `200 {"status":"ok"}`; seeded `problem_seed_two_sum` lists.
 - `POST /api/v1/submissions` (authenticated participant, `accepted.cpp`)

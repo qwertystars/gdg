@@ -21,7 +21,7 @@ not a leaderboard input.
 
 ```bash
 BENCHMARK_TOKEN='participant token' bun run benchmark:cloudflare -- \
-  --base-url https://gdg-remote-runtime.example.workers.dev \
+  --base-url https://gdg.qwertystars.org \
   --adversarial \
   --output benchmark-results/cloudflare.json
 ```

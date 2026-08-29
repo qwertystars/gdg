@@ -20,7 +20,7 @@ const terminal = new Set([
   "JUDGE_ERROR",
 ]);
 const args = process.argv.slice(2);
-const baseUrl = (flag("--base-url") ?? "https://gdg-remote-runtime.srijan-guchhait.workers.dev").replace(/\/$/, "");
+const baseUrl = (flag("--base-url") ?? "https://gdg.qwertystars.org").replace(/\/$/, "");
 const token = flag("--token") ?? process.env.BENCHMARK_TOKEN;
 const problemId = flag("--problem-id") ?? "problem_seed_two_sum";
 const outputPath = flag("--output");
