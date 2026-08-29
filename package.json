@@ -1,0 +1,37 @@
+{
+  "name": "gdg-remote-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote Runtime Environment for the GDG VIT Chennai speed-coding event. Typed domain, state repository, judge engine, and Cloudflare-shaped API.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "bun test",
+    "test:domain": "bun test tests/domain",
+    "test:judge": "bun test tests/judge",
+    "test:api": "bun test tests/api",
+    "build": "tsc --noEmit",
+    "judge": "bun run scripts/judge.ts",
+    "judge:local": "bun run runner/judge-driver.ts",
+    "dev": "bun run scripts/dev-server.ts",
+    "db:migrate": "bunx wrangler d1 migrations apply DB --local",
+    "db:seed": "bun run scripts/seed-problem.ts",
+    "check:wrangler": "bun run scripts/check-wrangler-jsonc.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.0",
+    "@cloudflare/workers-types": "^4.20250801.0",
+    "@types/bun": "^1.4.0",
+    "typescript": "^5.8.0",
+    "wrangler": "4.127.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.12.9",
+    "hono": "^4.13.5"
+  }
+}

@@ -1,0 +1,132 @@
+{
+  // Remote Runtime Environment: Cloudflare deployment configuration.
+  //
+  // This file describes the production topology from
+  // remote-runtime-backend-architecture.md section 53:
+  //
+  //   API Worker + Judge Worker in one project
+  //   D1 binding  : DB
+  //   R2 binding  : ARTIFACTS
+  //   Queue       : judge-queue (producer + consumer)
+  //   DLQ         : judge-dlq
+  //   Sandbox     : Sandbox Durable Object backed by a Containers instance
+  //
+  // Local development uses the same file through `wrangler dev`, but the
+  // local runtime (bun test, bun run judge) swaps the Cloudflare bindings
+  // for in-memory/local adapters. See README.md, "Local vs Cloudflare".
+  //
+  // JSONC: trailing commas and // comments are allowed. Wrangler validates
+  // this file on `wrangler deploy` and `wrangler dev`.
+
+  "name": "gdg-remote-runtime",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-28",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // ----------------------------- D1 ------------------------------------
+  // Single database. The schema lives in migrations/ and is applied with
+  // `wrangler d1 migrations apply DB`.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gdg-remote-runtime-db",
+      "database_id": "bd4f753f-4a2c-4627-9d9b-5b29c36f12be",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // ----------------------------- R2 -------------------------------------
+  // Source code, hidden test inputs/expected outputs, compiler logs.
+  // Layout documented in README.md ("R2 object layout").
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "gdg-remote-runtime-artifacts"
+    }
+  ],
+
+  // ----------------------------- Queues ---------------------------------
+  "queues": {
+    "producers": [
+      {
+        "queue": "judge-queue",
+        "binding": "JUDGE_QUEUE"
+      }
+    ],
+    "consumers": [
+      {
+        // One queue message == one judging attempt == one sandbox.
+        "queue": "judge-queue",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        // Deliberate event-level concurrency cap, see architecture section 8.
+        // Kept in lockstep with the container max_instances below.
+        "max_concurrency": 10,
+        "max_retries": 3,
+        "dead_letter_queue": "judge-dlq"
+      }
+    ]
+  },
+
+  // ----------------------------- Sandbox / Containers -------------------
+  // The Sandbox SDK runs participant code inside a Cloudflare Container.
+  // The Durable Object class name and the container class name must match.
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      // Dockerfile lives at the repository root (see README "Deployment").
+      // Pin the base image digest inside the Dockerfile, never `latest`.
+      "image": "./Dockerfile",
+      // One full vCPU for meaningful timing, see architecture section 6.
+      "instance_type": "standard-2",
+      // Keep in lockstep with queues max_concurrency: a burst must never
+      // start more judges than the container cap allows.
+      "max_instances": 10,
+      // Event is operated from India; restricting placement to APAC reduces
+      // geographic variability. Same region is not the same physical CPU.
+      "constraints": {
+        "regions": ["APAC"]
+      }
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox"
+      }
+    ]
+  },
+
+  // Durable Object migration for the Sandbox class. This is separate from
+  // the D1 SQL migrations in migrations/. `wrangler deploy` applies it.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Sandbox"]
+    }
+  ],
+
+  // ----------------------------- Env vars --------------------------------
+  // Constants shared by API and judge Workers. Secrets are never stored
+  // here; they are set with `wrangler secret put` (documented in README).
+  "vars": {
+    // Source size cap, see architecture section 44.
+    "SOURCE_LIMIT_BYTES": 131072,
+    // Default per-problem runtime limits (admins can override per problem).
+    "DEFAULT_TIME_LIMIT_MS": 2000,
+    "DEFAULT_MEMORY_LIMIT_KB": 262144,
+    "DEFAULT_OUTPUT_LIMIT_BYTES": 1048576,
+    // Judge execution window; must exceed a normal judging attempt so the
+    // lease does not expire mid-run. Queue consumers cap at 15 minutes.
+    "LEASE_DURATION_MS": 600000,
+    // Maximum infrastructure retries before JUDGE_ERROR / DLQ.
+    "MAX_JUDGE_RETRIES": 3,
+    // Participant feedback caps.
+    "COMPILER_OUTPUT_LIMIT_BYTES": 65536,
+    // Rate limit: per participant.
+    "RATE_LIMIT_SUBMISSIONS": 5,
+    "RATE_LIMIT_WINDOW_MS": 10000
+  }
+}
