@@ -19,6 +19,7 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 #include <vector>
+#include <optional>
 
 namespace {
 struct Options {
@@ -54,6 +55,71 @@ long long file_size(const std::string& path) {
   struct stat st{};
   return stat(path.c_str(), &st) == 0 ? static_cast<long long>(st.st_size) : 0;
 }
+
+bool write_text(const std::string& path, const std::string& value) {
+  std::ofstream stream(path);
+  if (!stream) return false;
+  stream << value;
+  return stream.good();
+}
+
+std::optional<long long> read_number(const std::string& path) {
+  std::ifstream stream(path);
+  long long value = 0;
+  if (!(stream >> value)) return std::nullopt;
+  return value;
+}
+
+class ExecutionCgroup {
+ public:
+  explicit ExecutionCgroup(const Options& options) {
+    const std::string root = "/sys/fs/cgroup";
+    path_ = root + "/gdg-judge-" + std::to_string(getpid());
+    std::error_code ec;
+    if (!std::filesystem::create_directory(path_, ec) || ec) return;
+    const bool configured =
+        write_text(path_ + "/memory.max", std::to_string(options.memory_kb * 1024)) &&
+        write_text(path_ + "/pids.max", std::to_string(options.max_processes));
+    // Swap must not let a submission exceed its contest memory allocation.
+    write_text(path_ + "/memory.swap.max", "0");
+    active_ = configured;
+    if (!active_) cleanup();
+  }
+
+  ~ExecutionCgroup() { cleanup(); }
+  bool active() const { return active_; }
+  bool attach_self() const { return active_ && write_text(path_ + "/cgroup.procs", std::to_string(getpid())); }
+  void kill_all() const { if (active_) write_text(path_ + "/cgroup.kill", "1"); }
+  long long peak_memory_kb() const {
+    const auto bytes = active_ ? read_number(path_ + "/memory.peak") : std::nullopt;
+    return bytes ? *bytes / 1024 : 0;
+  }
+  long long cpu_time_ns() const {
+    if (!active_) return 0;
+    std::ifstream stream(path_ + "/cpu.stat");
+    std::string key;
+    long long value = 0;
+    while (stream >> key >> value) if (key == "usage_usec") return value * 1000;
+    return 0;
+  }
+  bool memory_event(const std::string& wanted) const {
+    if (!active_) return false;
+    std::ifstream stream(path_ + "/memory.events");
+    std::string key;
+    long long value = 0;
+    while (stream >> key >> value) if (key == wanted && value > 0) return true;
+    return false;
+  }
+
+ private:
+  std::string path_;
+  bool active_ = false;
+  void cleanup() {
+    if (path_.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(path_, ec);
+  }
+};
 
 std::map<pid_t, pid_t> processes() {
   std::map<pid_t, pid_t> result;
@@ -98,7 +164,8 @@ void kill_tree(pid_t root) {
   for (auto it = tree.rbegin(); it != tree.rend(); ++it) if (*it != root) kill(*it, SIGKILL);
 }
 
-void kill_group(pid_t pid) {
+void kill_group(pid_t pid, const ExecutionCgroup* cgroup = nullptr) {
+  if (cgroup) cgroup->kill_all();
   if (pid > 0) kill(-pid, SIGKILL);
   kill_tree(getpid());
   kill(pid, SIGKILL);
@@ -119,10 +186,16 @@ int main(int argc, char** argv) {
   if (!parse(argc, argv, o)) return 2;
   const auto started = std::chrono::steady_clock::now();
   prctl(PR_SET_CHILD_SUBREAPER, 1);
+  ExecutionCgroup cgroup(o);
   pid_t child = fork();
   if (child < 0) return 3;
   if (child == 0) {
     setpgid(0, 0);
+    // If the trusted supervisor is killed or preempted, the participant must
+    // not continue running until the outer sandbox lifecycle catches up.
+    prctl(PR_SET_PDEATHSIG, SIGKILL);
+    if (getppid() == 1) _exit(125);
+    if (cgroup.active() && !cgroup.attach_self()) _exit(125);
     int in = open(o.input.c_str(), O_RDONLY);
     int out = open(o.output.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
     int err = open(o.error.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -139,7 +212,11 @@ int main(int argc, char** argv) {
     struct rlimit nofile{64, 64};
     setrlimit(RLIMIT_CPU, &cpu);
     setrlimit(RLIMIT_AS, &address);
-    setrlimit(RLIMIT_NPROC, &nproc);
+    // RLIMIT_NPROC is per real user, not per process tree. In production the
+    // root supervisor drops every submission into the dedicated nobody UID,
+    // so the limit is isolated. In local non-root development, applying it
+    // would count unrelated developer processes and cause false failures.
+    if (geteuid() == 0) setrlimit(RLIMIT_NPROC, &nproc);
     setrlimit(RLIMIT_FSIZE, &output);
     setrlimit(RLIMIT_CORE, &core);
     setrlimit(RLIMIT_NOFILE, &nofile);
@@ -152,6 +229,9 @@ int main(int argc, char** argv) {
     if (geteuid() == 0) {
       if (setgroups(0, nullptr) != 0 || setgid(65534) != 0 || setuid(65534) != 0) _exit(125);
     }
+    // Disallow privilege gain through setuid binaries or file capabilities.
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) _exit(125);
+    prctl(PR_SET_DUMPABLE, 0);
     clearenv(); setenv("LANG", "C.UTF-8", 1); setenv("LC_ALL", "C.UTF-8", 1); setenv("TZ", "UTC", 1); setenv("PATH", "/usr/bin:/bin", 1);
     execl(o.binary.c_str(), o.binary.c_str(), static_cast<char*>(nullptr));
     _exit(126);
@@ -165,20 +245,31 @@ int main(int argc, char** argv) {
     pid_t waited = wait4(child, &status, WNOHANG, &usage);
     if (waited == child) { reaped = true; break; }
     if (waited < 0 && errno == ECHILD) { reaped = true; break; }
-    peak_rss = std::max(peak_rss, tree_rss_kb(getpid()));
+    peak_rss = std::max(peak_rss, cgroup.active() ? cgroup.peak_memory_kb() : tree_rss_kb(getpid()));
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     if (file_size(o.output) + file_size(o.error) > o.output_bytes) output_exceeded = true;
-    if (peak_rss > o.memory_kb) memory_exceeded = true;
+    if (peak_rss > o.memory_kb || cgroup.memory_event("oom") || cgroup.memory_event("oom_kill")) memory_exceeded = true;
     if (static_cast<long long>(process_tree(getpid()).size()) - 1 > o.max_processes) process_exceeded = true;
     if (elapsed > o.wall_ms) timed_out = true;
-    if (timed_out || memory_exceeded || output_exceeded || process_exceeded) { kill_group(child); wait4(child, &status, 0, &usage); reaped = true; }
+    if (timed_out || memory_exceeded || output_exceeded || process_exceeded) { kill_group(child, &cgroup); wait4(child, &status, 0, &usage); reaped = true; }
     else usleep(1000);
   }
-  peak_rss = std::max(peak_rss, static_cast<long long>(usage.ru_maxrss));
+  peak_rss = std::max(peak_rss, std::max(static_cast<long long>(usage.ru_maxrss), cgroup.peak_memory_kb()));
   if (file_size(o.output) + file_size(o.error) > o.output_bytes) output_exceeded = true;
   if (WIFSIGNALED(status) && WTERMSIG(status) == SIGXFSZ) output_exceeded = true;
   if (peak_rss > o.memory_kb) memory_exceeded = true;
-  kill_group(child); // also remove any detached descendants after the main process exits
+  kill_group(child, &cgroup); // also remove detached descendants after the main process exits
+
+  // As a child subreaper, collect every orphaned descendant so its CPU usage
+  // cannot be hidden by forking and exiting the original process.
+  struct rusage descendant_usage{};
+  while (wait4(-1, nullptr, WNOHANG, &descendant_usage) > 0) {
+    usage.ru_utime.tv_sec += descendant_usage.ru_utime.tv_sec;
+    usage.ru_utime.tv_usec += descendant_usage.ru_utime.tv_usec;
+    usage.ru_stime.tv_sec += descendant_usage.ru_stime.tv_sec;
+    usage.ru_stime.tv_usec += descendant_usage.ru_stime.tv_usec;
+  }
+  const long long cgroup_cpu_ns = cgroup.cpu_time_ns();
 
   std::string classification = "NORMAL";
   if (timed_out) classification = "TIME_LIMIT_EXCEEDED";
@@ -189,13 +280,14 @@ int main(int argc, char** argv) {
   metrics << "{\"exitCode\":" << (WIFEXITED(status) ? std::to_string(WEXITSTATUS(status)) : "null")
           << ",\"signal\":" << (WIFSIGNALED(status) ? std::to_string(WTERMSIG(status)) : "null")
           << ",\"wallTimeNs\":" << std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()
-          << ",\"userCpuTimeNs\":" << ns(usage.ru_utime)
-          << ",\"systemCpuTimeNs\":" << ns(usage.ru_stime)
+          << ",\"userCpuTimeNs\":" << (cgroup_cpu_ns > 0 ? cgroup_cpu_ns : ns(usage.ru_utime))
+          << ",\"systemCpuTimeNs\":" << (cgroup_cpu_ns > 0 ? 0 : ns(usage.ru_stime))
           << ",\"maxRssKb\":" << peak_rss
           << ",\"timedOut\":" << (timed_out ? "true" : "false")
           << ",\"memoryExceeded\":" << (memory_exceeded ? "true" : "false")
           << ",\"outputExceeded\":" << (output_exceeded ? "true" : "false")
           << ",\"processLimitExceeded\":" << (process_exceeded ? "true" : "false")
+          << ",\"resourceAccounting\":\"" << (cgroup.active() ? "cgroup-v2" : "rlimit-proc-fallback") << "\""
           << ",\"classification\":\"" << classification << "\"}\n";
   return 0;
 }

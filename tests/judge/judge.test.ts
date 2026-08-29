@@ -84,6 +84,13 @@ describe("local C++17 judge", () => {
     expect(result.status).toBe("OUTPUT_LIMIT_EXCEEDED");
     expect(result.cleanup.sandboxDestroyed).toBe(true);
   });
+
+  test("accounts CPU work performed by participant child processes", async () => {
+    const result = await judge(await fixture("forked-work.cpp"));
+    expect(result.status).toBe("ACCEPTED");
+    const cpuNs = result.runs[0]!.metrics.userCpuTimeNs + result.runs[0]!.metrics.systemCpuTimeNs;
+    expect(cpuNs).toBeGreaterThan(1_000_000);
+  });
 });
 
 test("benchmark scoring runs one warm-up pass before the recorded trials", async () => {

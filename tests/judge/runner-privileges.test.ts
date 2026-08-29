@@ -25,7 +25,7 @@ describe("judge-runner trust boundary", () => {
     // future edit that removes them (trusted-metrics boundary, backend A:23)
     // fails this assertion at the binary level, not just in source.
     const symbols = await Bun.$`nm ${binary}`.text();
-    for (const sym of ["setgroups", "setgid", "setuid"]) {
+    for (const sym of ["setgroups", "setgid", "setuid", "prctl"]) {
       expect(symbols, sym).toContain(sym);
     }
 
@@ -33,5 +33,11 @@ describe("judge-runner trust boundary", () => {
     // child actually sets it (backend A:22 "Bound open file descriptors").
     const source = await Bun.file("runner/judge-runner.cpp").text();
     expect(source).toContain("RLIMIT_NOFILE");
+    expect(source).toContain("PR_SET_NO_NEW_PRIVS");
+    expect(source).toContain("PR_SET_PDEATHSIG");
+    expect(source).toContain("memory.max");
+    expect(source).toContain("pids.max");
+    expect(source).toContain("cgroup.kill");
+    expect(source).toContain("cpu.stat");
   });
 });
