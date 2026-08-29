@@ -8,6 +8,10 @@
 -- the swap so referencing tables do not block the DROP.
 
 PRAGMA foreign_keys=OFF;
+-- D1 wraps each migration in a transaction, where changing foreign_keys is
+-- ignored by SQLite. Deferring checks makes the table swap valid for a
+-- populated database because the submissions table exists again at commit.
+PRAGMA defer_foreign_keys=ON;
 
 CREATE TABLE submissions_new (
     id TEXT PRIMARY KEY,
@@ -72,9 +76,70 @@ SELECT
     created_at, queued_at, started_at, completed_at, updated_at
 FROM submissions;
 
+-- D1 migrations run transactionally, so PRAGMA foreign_keys cannot disable
+-- checks. Preserve and temporarily remove all child tables before swapping
+-- the referenced parent table; recreate them and their rows afterwards.
+CREATE TABLE submission_test_results_backup AS SELECT * FROM submission_test_results;
+CREATE TABLE submission_benchmarks_backup AS SELECT * FROM submission_benchmarks;
+CREATE TABLE judge_attempts_backup AS SELECT * FROM judge_attempts;
+DROP TABLE submission_test_results;
+DROP TABLE submission_benchmarks;
+DROP TABLE judge_attempts;
+
 DROP TABLE submissions;
 
 ALTER TABLE submissions_new RENAME TO submissions;
+
+CREATE TABLE submission_test_results (
+    submission_id TEXT NOT NULL,
+    test_case_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN (
+        'PASS', 'WRONG_ANSWER', 'RUNTIME_ERROR', 'TIME_LIMIT_EXCEEDED',
+        'MEMORY_LIMIT_EXCEEDED', 'OUTPUT_LIMIT_EXCEEDED'
+    )),
+    cpu_time_ns INTEGER,
+    wall_time_ns INTEGER,
+    peak_memory_kb INTEGER,
+    exit_code INTEGER,
+    signal INTEGER,
+    PRIMARY KEY (submission_id, test_case_id),
+    FOREIGN KEY (submission_id) REFERENCES submissions(id),
+    FOREIGN KEY (test_case_id) REFERENCES test_cases(id)
+);
+INSERT INTO submission_test_results SELECT * FROM submission_test_results_backup;
+DROP TABLE submission_test_results_backup;
+
+CREATE TABLE submission_benchmarks (
+    submission_id TEXT NOT NULL,
+    test_case_id TEXT NOT NULL,
+    run_number INTEGER NOT NULL,
+    cpu_time_ns INTEGER NOT NULL,
+    wall_time_ns INTEGER NOT NULL,
+    peak_memory_kb INTEGER NOT NULL,
+    PRIMARY KEY (submission_id, test_case_id, run_number),
+    FOREIGN KEY (submission_id) REFERENCES submissions(id),
+    FOREIGN KEY (test_case_id) REFERENCES test_cases(id)
+);
+INSERT INTO submission_benchmarks SELECT * FROM submission_benchmarks_backup;
+DROP TABLE submission_benchmarks_backup;
+
+CREATE TABLE judge_attempts (
+    submission_id TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    execution_token TEXT NOT NULL,
+    sandbox_id TEXT,
+    status TEXT NOT NULL CHECK (status IN (
+        'CLAIMED', 'RUNNING', 'SUCCEEDED', 'FAILED_RETRYABLE', 'FAILED_TERMINAL'
+    )),
+    infrastructure_error TEXT,
+    error_id TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    PRIMARY KEY (submission_id, attempt_number),
+    FOREIGN KEY (submission_id) REFERENCES submissions(id)
+);
+INSERT INTO judge_attempts SELECT * FROM judge_attempts_backup;
+DROP TABLE judge_attempts_backup;
 
 -- Recreate the submission indexes from 0002_indexes.sql.
 CREATE INDEX idx_submissions_participant_created
