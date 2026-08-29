@@ -76,6 +76,8 @@ export interface JudgeResult {
 }
 
 export interface JudgeRequest {
+  /** Defaults to cpp17 for existing internal callers. API submissions always set it. */
+  language?: import("../domain/enums").SubmissionLanguage;
   source: string;
   correctness: JudgeTestCase[];
   benchmarks?: JudgeTestCase[];
@@ -90,6 +92,9 @@ export interface Judge {
 
 export interface ProcessExecutionSpec {
   binaryPath: string;
+  /** Trusted language-adapter arguments; participant input never populates this directly. */
+  args: string[];
+  memoryAccounting: "address-space" | "rss";
   inputPath: string;
   stdoutPath: string;
   stderrPath: string;
@@ -121,7 +126,14 @@ export interface SandboxAdapter {
 }
 
 export interface CompilerAdapter {
-  compile(source: string, workspace: string): Promise<{ ok: true; binaryPath: string } | { ok: false; output: string }>;
+  compile(
+    source: string,
+    workspace: string,
+    language?: import("../domain/enums").SubmissionLanguage,
+  ): Promise<
+    | { ok: true; binaryPath: string; args: string[]; memoryAccounting: "address-space" | "rss" }
+    | { ok: false; output: string }
+  >;
 }
 
 export interface OutputComparator {

@@ -125,6 +125,7 @@ export class JudgeConsumer {
     const benchmarkCases = await Promise.all(benchmarks.map((t) => this.loadTestCase(t)));
 
     const result = await this.deps.judge.judge({
+      language: submission.language,
       source,
       correctness: correctnessCases,
       benchmarks: benchmarkCases,

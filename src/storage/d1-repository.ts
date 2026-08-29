@@ -17,7 +17,14 @@ import type {
   SubmissionTestResultRecord,
   TestCaseRecord,
 } from "../domain/entities";
-import type { ComparatorPolicy, JudgeAttemptStatus, Role, SubmissionStatus, TestCaseKind } from "../domain/enums";
+import type {
+  ComparatorPolicy,
+  JudgeAttemptStatus,
+  Role,
+  SubmissionLanguage,
+  SubmissionStatus,
+  TestCaseKind,
+} from "../domain/enums";
 import { isTerminalSubmissionStatus } from "../domain/enums";
 import {
   type ApiTokenId,
@@ -558,7 +565,7 @@ export class D1Repository implements Repository {
       participantId: asParticipantId(emptyString(r.participant_id)),
       problemId: asProblemId(emptyString(r.problem_id)),
       problemVersion: Number(r.problem_version),
-      language: "cpp17",
+      language: emptyString(r.language) as SubmissionLanguage,
       sourceR2Key: emptyString(r.source_r2_key),
       status: r.status as SubmissionStatus,
       attemptCount: Number(r.attempt_count),

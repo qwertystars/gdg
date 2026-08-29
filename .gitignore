@@ -7,3 +7,4 @@ dist/
 coverage/
 *.log
 runner/judge-runner
+scripts/fixtures/demo/sources/sub_*/

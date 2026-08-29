@@ -6,6 +6,7 @@
 import { Hono } from "hono";
 import type { ProblemRecord } from "../domain/entities";
 import { asProblemId } from "../domain/ids";
+import { SUPPORTED_LANGUAGES } from "../judge/languages";
 import type { Repository } from "../storage/repository";
 import { requireAuth } from "./auth";
 import { ApiError } from "./errors";
@@ -18,6 +19,7 @@ export function problemView(problem: ProblemRecord): Record<string, unknown> {
     lifecycleState: problem.lifecycleState,
     activeVersion: problem.activeVersion,
     limits: problem.limits,
+    supportedLanguages: SUPPORTED_LANGUAGES,
   };
 }
 

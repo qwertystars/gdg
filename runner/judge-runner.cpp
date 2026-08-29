@@ -24,6 +24,8 @@
 namespace {
 struct Options {
   std::string binary, input, output, error, metrics;
+  std::vector<std::string> args;
+  bool address_space_limit = true;
   long long wall_ms = 2000, cpu_ms = 1500, memory_kb = 262144, output_bytes = 1048576, max_processes = 16;
 };
 
@@ -41,6 +43,12 @@ bool parse(int argc, char** argv, Options& o) {
     else if (value("--stdout", i, argc, argv, v)) o.output = v;
     else if (value("--stderr", i, argc, argv, v)) o.error = v;
     else if (value("--metrics", i, argc, argv, v)) o.metrics = v;
+    else if (value("--arg", i, argc, argv, v)) o.args.push_back(v);
+    else if (value("--memory-accounting", i, argc, argv, v)) {
+      if (v == "address-space") o.address_space_limit = true;
+      else if (v == "rss") o.address_space_limit = false;
+      else return false;
+    }
     else if (value("--wall-ms", i, argc, argv, v)) o.wall_ms = std::stoll(v);
     else if (value("--cpu-ms", i, argc, argv, v)) o.cpu_ms = std::stoll(v);
     else if (value("--memory-kb", i, argc, argv, v)) o.memory_kb = std::stoll(v);
@@ -178,7 +186,8 @@ long long ns(const struct timeval& t) {
 
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "judge-runner --binary PATH --input PATH --stdout PATH --stderr PATH --metrics PATH"
+    std::cout << "judge-runner --binary PATH [--arg VALUE ...] --memory-accounting address-space|rss"
+                 " --input PATH --stdout PATH --stderr PATH --metrics PATH"
                  " --wall-ms N --cpu-ms N --memory-kb N --output-bytes N --max-processes N\n";
     return 0;
   }
@@ -211,7 +220,7 @@ int main(int argc, char** argv) {
     // exhaust the container's fd table.
     struct rlimit nofile{64, 64};
     setrlimit(RLIMIT_CPU, &cpu);
-    setrlimit(RLIMIT_AS, &address);
+    if (o.address_space_limit) setrlimit(RLIMIT_AS, &address);
     // RLIMIT_NPROC is per real user, not per process tree. In production the
     // root supervisor drops every submission into the dedicated nobody UID,
     // so the limit is isolated. In local non-root development, applying it
@@ -232,8 +241,17 @@ int main(int argc, char** argv) {
     // Disallow privilege gain through setuid binaries or file capabilities.
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) _exit(125);
     prctl(PR_SET_DUMPABLE, 0);
-    clearenv(); setenv("LANG", "C.UTF-8", 1); setenv("LC_ALL", "C.UTF-8", 1); setenv("TZ", "UTC", 1); setenv("PATH", "/usr/bin:/bin", 1);
-    execl(o.binary.c_str(), o.binary.c_str(), static_cast<char*>(nullptr));
+    // RLIMIT_FSIZE normally raises SIGXFSZ, which desktop crash reporters
+    // mistake for an application crash during intentional output-flood tests.
+    // Ignoring it keeps writes capped with EFBIG; the supervisor observes the
+    // full file and emits the canonical OUTPUT_LIMIT_EXCEEDED classification.
+    signal(SIGXFSZ, SIG_IGN);
+    clearenv(); setenv("LANG", "C.UTF-8", 1); setenv("LC_ALL", "C.UTF-8", 1); setenv("TZ", "UTC", 1); setenv("PATH", "/usr/local/bin:/usr/bin:/bin", 1);
+    std::vector<char*> exec_args;
+    exec_args.push_back(const_cast<char*>(o.binary.c_str()));
+    for (auto& arg : o.args) exec_args.push_back(arg.data());
+    exec_args.push_back(nullptr);
+    execvp(o.binary.c_str(), exec_args.data());
     _exit(126);
   }
   setpgid(child, child);
@@ -247,7 +265,7 @@ int main(int argc, char** argv) {
     if (waited < 0 && errno == ECHILD) { reaped = true; break; }
     peak_rss = std::max(peak_rss, cgroup.active() ? cgroup.peak_memory_kb() : tree_rss_kb(getpid()));
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
-    if (file_size(o.output) + file_size(o.error) > o.output_bytes) output_exceeded = true;
+    if (file_size(o.output) + file_size(o.error) >= o.output_bytes) output_exceeded = true;
     if (peak_rss > o.memory_kb || cgroup.memory_event("oom") || cgroup.memory_event("oom_kill")) memory_exceeded = true;
     if (static_cast<long long>(process_tree(getpid()).size()) - 1 > o.max_processes) process_exceeded = true;
     if (elapsed > o.wall_ms) timed_out = true;
@@ -255,7 +273,7 @@ int main(int argc, char** argv) {
     else usleep(1000);
   }
   peak_rss = std::max(peak_rss, std::max(static_cast<long long>(usage.ru_maxrss), cgroup.peak_memory_kb()));
-  if (file_size(o.output) + file_size(o.error) > o.output_bytes) output_exceeded = true;
+  if (file_size(o.output) + file_size(o.error) >= o.output_bytes) output_exceeded = true;
   if (WIFSIGNALED(status) && WTERMSIG(status) == SIGXFSZ) output_exceeded = true;
   if (peak_rss > o.memory_kb) memory_exceeded = true;
   kill_group(child, &cgroup); // also remove detached descendants after the main process exits

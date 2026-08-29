@@ -241,7 +241,7 @@ describe("submission lifecycle", () => {
     const res = await post(
       c,
       "/api/v1/submissions",
-      { problemId: SEED_PROBLEM_ID, language: "python3", source: "print(1)" },
+      { problemId: SEED_PROBLEM_ID, language: "rust", source: "fn main() {}" },
       PARTICIPANT_TOKEN,
     );
     expect(res.status).toBe(422);

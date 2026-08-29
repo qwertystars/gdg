@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { SubmissionLanguage } from "../../src/domain/enums";
 import {
   type JudgeLimits,
   LocalCpp17Judge,
@@ -33,11 +34,66 @@ async function judge(source: string, input = "21\n", expected = "42\n") {
   });
 }
 
+async function judgeLanguage(language: SubmissionLanguage, source: string) {
+  const root = await Bun.$`mktemp -d`.text();
+  const workspace = root.trim();
+  tempRoots.push(workspace);
+  return new LocalCpp17Judge({ workspaceRoot: workspace }).judge({
+    language,
+    source,
+    correctness: [{ id: "sample", input: "21\n", expected: "42\n" }],
+    limits: { ...limits, memoryKb: 512 * 1024 },
+  });
+}
+
 afterEach(async () => {
   while (tempRoots.length > 0) {
     const root = tempRoots.pop();
     if (root) await Bun.$`rm -rf ${root}`;
   }
+});
+
+describe("multi-language judge", () => {
+  test.each([
+    [
+      "c17",
+      '#include <stdio.h>\nint main(void) { long long n; if (scanf("%lld", &n) != 1) return 1; printf("%lld\\n", n * 2); }',
+    ],
+    ["python3", "import sys\nn = int(sys.stdin.readline())\nprint(n * 2)\n"],
+    [
+      "javascript",
+      "const fs = require('node:fs'); const n = BigInt(fs.readFileSync(0, 'utf8').trim()); console.log(String(n * 2n));",
+    ],
+  ] as const)("accepts a correct %s submission", async (language, source) => {
+    const result = await judgeLanguage(language, source);
+    expect(result.status).toBe("ACCEPTED");
+    expect(result.runs[0]?.stdout).toBe("42\n");
+    expect(result.runs[0]?.metrics.wallTimeNs).toBeGreaterThan(0);
+  });
+
+  test.each([
+    ["c17", "int main( {"],
+    ["python3", "if True print('broken')"],
+    ["javascript", "const = broken"],
+  ] as const)("classifies invalid %s source as COMPILE_ERROR", async (language, source) => {
+    const result = await judgeLanguage(language, source);
+    expect(result.status).toBe("COMPILE_ERROR");
+    expect(result.compilerOutput).toBeTruthy();
+  });
+
+  test("enforces Python memory by aggregate RSS without triggering a runtime crash dialog", async () => {
+    const root = await Bun.$`mktemp -d`.text();
+    const workspace = root.trim();
+    tempRoots.push(workspace);
+    const result = await new LocalCpp17Judge({ workspaceRoot: workspace }).judge({
+      language: "python3",
+      source: "chunks = []\nwhile True:\n    chunks.append(bytearray(1024 * 1024))\n",
+      correctness: [{ id: "memory", input: "", expected: "" }],
+      limits: { ...limits, memoryKb: 64 * 1024 },
+    });
+    expect(result.status).toBe("MEMORY_LIMIT_EXCEEDED");
+    expect(result.runs[0]?.metrics.memoryExceeded).toBe(true);
+  });
 });
 
 describe("local C++17 judge", () => {

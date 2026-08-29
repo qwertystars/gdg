@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { SubmissionLanguage } from "../domain/enums";
+import { languageDefinition } from "./languages";
 import type {
   CompilerAdapter,
   ProcessExecutionAdapter,
@@ -64,20 +66,26 @@ export class LocalCpp17Compiler implements CompilerAdapter {
   async compile(
     source: string,
     workspace: string,
-  ): Promise<{ ok: true; binaryPath: string } | { ok: false; output: string }> {
+    language: SubmissionLanguage = "cpp17",
+  ): Promise<
+    | { ok: true; binaryPath: string; args: string[]; memoryAccounting: "address-space" | "rss" }
+    | { ok: false; output: string }
+  > {
     await mkdir(workspace, { recursive: true });
-    const sourcePath = join(workspace, "source.cpp");
+    const definition = languageDefinition(language);
+    const sourcePath = join(workspace, definition.sourceFile);
     const binaryPath = join(workspace, "submission");
     await Bun.write(sourcePath, source);
-    const result = await command(
-      "g++",
-      ["-std=c++17", "-O2", "-pipe", sourcePath, "-o", binaryPath],
-      workspace,
-      10_000,
-      256 * 1024,
-    );
+    const compile = definition.compile(sourcePath, binaryPath);
+    const result = await command(compile.command, compile.args, workspace, 10_000, 256 * 1024);
     if (result.code !== 0 || result.signal) return { ok: false, output: result.output };
-    return { ok: true, binaryPath };
+    const execution = definition.execute(sourcePath, binaryPath);
+    return {
+      ok: true,
+      binaryPath: Bun.which(execution.command) ?? execution.command,
+      args: execution.args,
+      memoryAccounting: definition.memoryAccounting,
+    };
   }
 }
 
@@ -118,6 +126,9 @@ export class LocalProcessExecutionAdapter implements ProcessExecutionAdapter {
     const args = [
       "--binary",
       spec.binaryPath,
+      ...spec.args.flatMap((arg) => ["--arg", arg]),
+      "--memory-accounting",
+      spec.memoryAccounting,
       "--input",
       spec.inputPath,
       "--stdout",

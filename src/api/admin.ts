@@ -23,6 +23,7 @@ import {
   newTestCaseId,
 } from "../domain/ids";
 import { TEST_INPUT_R2_PREFIX } from "../domain/seed";
+import { isSubmissionLanguage, SUPPORTED_LANGUAGES } from "../judge/languages";
 import type { ArtifactStore } from "../storage/artifact-store";
 import type { Repository } from "../storage/repository";
 import { participantIdOf, requireAdmin, requireAuth } from "./auth";
@@ -136,14 +137,22 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
     const fields = await parseJson(c);
     const version = fields.version;
     if (typeof version !== "number") throw new ApiError(400, "version required");
+    const requestedLanguages = fields.languages ?? SUPPORTED_LANGUAGES;
+    if (
+      !Array.isArray(requestedLanguages) ||
+      requestedLanguages.length === 0 ||
+      !requestedLanguages.every((language) => typeof language === "string" && isSubmissionLanguage(language))
+    ) {
+      throw new ApiError(400, "languages must be a non-empty array of supported language ids");
+    }
     const existing = await repo.findProblemVersion(problem.id, version);
     if (existing !== null) throw new ApiError(409, "version already exists");
     const nowMs = deps.nowMs?.() ?? Date.now();
     await repo.createProblemVersion({
       problemId: problem.id,
       version,
-      languagePolicy: "cpp17",
-      compilerImageVersion: "gcc-13.2.0-cpp17",
+      languagePolicy: requestedLanguages.join(","),
+      compilerImageVersion: "gcc-12_python3_nodejs",
       comparatorVersion: "normalized-v1",
       runnerImageVersion: "judge-runner-v1",
       nowMs,
@@ -158,7 +167,7 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       detailJson: JSON.stringify({ version }),
       nowMs,
     });
-    return c.json({ problemId: problem.id, version }, 201);
+    return c.json({ problemId: problem.id, version, languages: requestedLanguages }, 201);
   });
 
   app.post("/problems/:problemId/versions/:version/tests", async (c) => {

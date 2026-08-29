@@ -17,6 +17,7 @@ import { Hono } from "hono";
 import type { SubmissionRecord } from "../domain/entities";
 import { asProblemId, asSubmissionId, newSubmissionId, type ParticipantId } from "../domain/ids";
 import { sourceR2KeyFor } from "../domain/seed";
+import { isSubmissionLanguage } from "../judge/languages";
 import type { ArtifactStore } from "../storage/artifact-store";
 import type { Repository } from "../storage/repository";
 import { participantIdOf, requireAuth } from "./auth";
@@ -155,8 +156,13 @@ export function submissionsRoutes(deps: SubmissionRouteDeps): Hono {
     if (problem === null || problem.lifecycleState !== "ACTIVE" || problem.activeVersion === null) {
       throw new ApiError(404, "problem not found");
     }
-    if (input.language !== "cpp17") {
+    if (!isSubmissionLanguage(input.language)) {
       throw new ApiError(422, "unsupported language", "UNSUPPORTED_LANGUAGE");
+    }
+    const problemVersion = await repo.findProblemVersion(problem.id, problem.activeVersion);
+    const allowedLanguages = new Set(problemVersion?.languagePolicy.split(",").map((value) => value.trim()) ?? []);
+    if (!allowedLanguages.has(input.language)) {
+      throw new ApiError(422, "language is not enabled for this problem version", "UNSUPPORTED_LANGUAGE");
     }
     const byteLength = new TextEncoder().encode(input.source).byteLength;
     if (input.source.length === 0 || byteLength > SOURCE_LIMIT_BYTES) {
@@ -171,12 +177,12 @@ export function submissionsRoutes(deps: SubmissionRouteDeps): Hono {
     // Persist the source BEFORE the metadata row (business-logic section 10):
     // if the write fails the request fails with no orphan CREATED row that is
     // never queued. The submitted source is what the judge reads.
-    const sourceKey = sourceR2KeyFor(submissionId);
+    const sourceKey = sourceR2KeyFor(submissionId, input.language);
     await deps.store.write(sourceKey, input.source);
     const submission = await repo.createSubmission({
       participantId,
       problemId: problem.id,
-      language: "cpp17",
+      language: input.language,
       sourceR2Key: sourceKey,
       nowMs,
     });

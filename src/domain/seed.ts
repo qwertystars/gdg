@@ -15,6 +15,7 @@ import type {
   ProblemVersionRecord,
   TestCaseRecord,
 } from "./entities";
+import type { SubmissionLanguage } from "./enums";
 import type { ParticipantId } from "./ids";
 import { asApiTokenId, asParticipantId, asProblemId, asTestCaseId } from "./ids";
 
@@ -96,8 +97,8 @@ const problemVersions: readonly ProblemVersionRecord[] = [
   {
     problemId: SEED_PROBLEM_ID,
     version: 1,
-    languagePolicy: "cpp17",
-    compilerImageVersion: "gcc-13.2.0-cpp17",
+    languagePolicy: "cpp17,c17,python3,javascript",
+    compilerImageVersion: "gcc-12_python3_nodejs",
     comparatorVersion: "normalized-v1",
     runnerImageVersion: "judge-runner-v1",
     createdAtMs: EPOCH_MS,
@@ -153,6 +154,12 @@ export function hashSeedToken(plaintext: string): string {
   return sha256Hex(plaintext);
 }
 
-export function sourceR2KeyFor(submissionId: string): string {
-  return `${SOURCE_R2_KEY_PREFIX}/${submissionId}/source.cpp`;
+export function sourceR2KeyFor(submissionId: string, language: SubmissionLanguage = "cpp17"): string {
+  const extension: Readonly<Record<SubmissionLanguage, string>> = {
+    cpp17: "cpp",
+    c17: "c",
+    python3: "py",
+    javascript: "cjs",
+  };
+  return `${SOURCE_R2_KEY_PREFIX}/${submissionId}/source.${extension[language]}`;
 }

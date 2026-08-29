@@ -29,14 +29,14 @@ import type {
   SubmissionTestResultRecord,
   TestCaseRecord,
 } from "../domain/entities";
-import type { ComparatorPolicy, Role, SubmissionStatus, TestCaseKind } from "../domain/enums";
+import type { ComparatorPolicy, Role, SubmissionLanguage, SubmissionStatus, TestCaseKind } from "../domain/enums";
 import type { ApiTokenId, AuditLogId, ParticipantId, ProblemId, SubmissionId, TestCaseId } from "../domain/ids";
 import type { ClaimOutcome, ClaimRequest, SubmitResultOutcome, SubmitResultRequest } from "../domain/state";
 
 export interface CreateSubmissionInput {
   participantId: ParticipantId;
   problemId: ProblemId;
-  language: "cpp17";
+  language: SubmissionLanguage;
   sourceR2Key: string;
   nowMs: number;
 }
