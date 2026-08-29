@@ -1,18 +1,11 @@
 /**
  * Idempotent startup bootstrap for the Cloudflare runtime: seeds the D1
- * database and R2 bucket from the deterministic seed data + demo fixtures
- * when empty. Runs once per fresh local database and no-ops when already
- * seeded, so `wrangler dev` is usable without manual CLI steps.
+ * database and R2 bucket with participants, a demo problem, and fixtures when
+ * empty. It intentionally never creates API tokens: production credentials
+ * must be provisioned explicitly and must not derive from public seed data.
  */
 
-import {
-  hashSeedToken,
-  SEED_ADMIN_ID,
-  SEED_ADMIN_TOKEN,
-  SEED_PARTICIPANT_ID,
-  SEED_PARTICIPANT_TOKEN,
-  seedData,
-} from "../domain/seed";
+import { SEED_ADMIN_ID, SEED_PARTICIPANT_ID, seedData } from "../domain/seed";
 import type { D1Like } from "../storage/d1-repository";
 
 export async function bootstrapCloudflare(env: {
@@ -35,17 +28,6 @@ export async function bootstrapCloudflare(env: {
   await db
     .prepare("INSERT INTO participants (id, display_name, status, created_at) VALUES (?, ?, 'ACTIVE', ?)")
     .bind(SEED_ADMIN_ID, "Seed Admin", now)
-    .run();
-
-  await db
-    .prepare(
-      "INSERT INTO api_tokens (id, participant_id, token_hash, role, created_at) VALUES (?, ?, ?, 'PARTICIPANT', ?)",
-    )
-    .bind("token_seed_participant", SEED_PARTICIPANT_ID, hashSeedToken(SEED_PARTICIPANT_TOKEN), now)
-    .run();
-  await db
-    .prepare("INSERT INTO api_tokens (id, participant_id, token_hash, role, created_at) VALUES (?, ?, ?, 'ADMIN', ?)")
-    .bind("token_seed_admin", SEED_ADMIN_ID, hashSeedToken(SEED_ADMIN_TOKEN), now)
     .run();
 
   const problem = data.problems[0];

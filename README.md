@@ -144,13 +144,12 @@ organizer provisions participants and gives each person their bearer token over
 a separate trusted channel. Treat that token like a password and use it only
 over HTTPS.
 
-> **Production bootstrap warning:** `src/domain/seed.ts` contains deterministic
-> development tokens, and `bootstrapCloudflare()` inserts them into an empty
-> database. They make local setup convenient but are public credentials and
-> must not be trusted for a real event. Before participant access, revoke both
-> `token_seed_admin` and `token_seed_participant`, provision a high-entropy
-> organizer token through a controlled bootstrap, and never place its plaintext
-> in source control, shell history, logs, benchmark reports, or frontend code.
+> **Production bootstrap:** `src/domain/seed.ts` contains deterministic tokens
+> for local development and tests only. `bootstrapCloudflare()` intentionally
+> does not insert API tokens into D1. Provision the first high-entropy organizer
+> token through a controlled D1 operation, then use the authenticated token API
+> for later credentials. Never place plaintext production tokens in source
+> control, shell history, logs, benchmark reports, or frontend code.
 
 Participants must exist before a token can be issued. Until a participant
 import endpoint is added, organizers can insert an event roster into D1 using
@@ -603,7 +602,7 @@ bunx wrangler deploy   # builds + pushes the container image, deploys worker
 | Preempted workers could otherwise overwrite newer results | At-least-once delivery permits overlapping attempts after lease expiry | Conditional lease claims and per-attempt execution tokens gate every terminal commit |
 | Raw execution latency was noisy on cloud containers | Cold starts, Queue delay, and shared-host scheduling are outside participant control | Score only trusted CPU time inside the supervised process; use repeated runs and median; report end-to-end latency separately |
 | Local Cloudflare Containers did not start the application container | Current upstream local Containers limitation | Use local native-runner tests for development and the paid Cloudflare plane for final integration/disruption benchmarks |
-| Statically known bootstrap credentials are convenient but unsafe | Deterministic seed data was designed for reproducible local development | Explicitly document the risk, revoke seed tokens before an event, and use one-time high-entropy token issuance; a production-only bootstrap remains a deployment prerequisite |
+| Statically known bootstrap credentials are convenient but unsafe | Deterministic seed data was designed for reproducible local development | Cloudflare bootstrap never inserts tokens; production uses an explicit first-admin provision followed by one-time high-entropy token issuance |
 
 The final local suite passed 140 tests, and the deployed correctness/disruption
 matrix passed 9/9 scenarios. Exact deployment IDs, container digest, timings,
