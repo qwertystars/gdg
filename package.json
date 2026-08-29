@@ -15,6 +15,8 @@
     "build": "tsc --noEmit",
     "judge": "bun run scripts/judge.ts",
     "judge:local": "bun run runner/judge-driver.ts",
+    "benchmark:local": "bun run scripts/benchmark-local.ts",
+    "benchmark:cloudflare": "bun run scripts/benchmark-cloudflare.ts",
     "dev": "bun run scripts/dev-server.ts",
     "db:migrate": "bunx wrangler d1 migrations apply DB --local",
     "db:seed": "bun run scripts/seed-problem.ts",

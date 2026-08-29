@@ -257,6 +257,18 @@ bun run lint                # biome check
 bun run build               # emit the worker bundle
 ```
 
+## Benchmarks
+
+Run the complete local language, resource-accounting, and disruption matrix:
+
+```bash
+bun run benchmark:local -- --repeats 5 --concurrency 2
+```
+
+Run the same workflow through a deployed Worker, Queue, D1, R2, and Cloudflare
+Container with `bun run benchmark:cloudflare`. See [BENCHMARKS.md](BENCHMARKS.md)
+for rate-limit-safe commands, report fields, and interpretation rules.
+
 The judge suite covers accepted, compile error, wrong answer, infinite
 loop timeout, output flood, and median scoring. The domain suite covers
 state transitions, claim leases, and stale-result protection. None of

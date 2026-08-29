@@ -25,8 +25,8 @@ Options:
   -v, --version  Print the project version from package.json and exit.
 
 About:
-  The Remote Runtime judges C++17 submissions in isolated Cloudflare
-  Sandboxes. The Cloudflare path is: API worker enqueues a submissionId,
+  The Remote Runtime judges C++17, C17, Python 3, and JavaScript submissions
+  in isolated Cloudflare Sandboxes. The Cloudflare path is: API worker enqueues a submissionId,
   the judge consumer claims an execution lease in D1, compiles once,
   runs correctness tests, then benchmarks accepted submissions with five
   repeated runs and a median CPU-time score.
@@ -39,6 +39,7 @@ About:
 
 Run the local judge engine (the judge lane's driver):
   bun run judge:local -- \
+    --language cpp17 \
     --source scripts/fixtures/demo/sources/accepted.cpp \
     --input scripts/fixtures/demo/tests/001.in \
     --expected scripts/fixtures/demo/tests/001.out
