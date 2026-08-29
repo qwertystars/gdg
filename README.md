@@ -1,7 +1,7 @@
 # GDG Remote Runtime Environment
 
 Backend for the GDG VIT Chennai speed-coding event. Participants submit
-C++17 source code over HTTP; the platform compiles it once, runs it in an
+source code in C++17, C17, Python 3, or JavaScript over HTTP; the platform compiles or validates it once, runs it in an
 isolated sandbox, checks correctness against hidden tests, benchmarks
 correct submissions, and returns a deterministic judgment with trusted
 CPU/memory metrics.
@@ -17,16 +17,28 @@ This README describes the working repository and how to run it.
 | Path | Purpose |
 |---|---|
 | `src/domain/`, `src/storage/` | Typed domain model, submission state machine, lease/claim logic, in-memory repository, seed data (foundation lane) |
-| `src/judge/`, `runner/` | Local C++17 compiler/runner, comparator, resource classification, median scoring, cleanup (judge lane) |
+| `src/judge/`, `runner/` | Multi-language adapters, native supervisor, comparator, resource classification, median scoring, cleanup |
 | `src/api/`, `src/index.ts` | Hono HTTP API, auth, submission orchestration, queue adapter (api lane) |
 | `migrations/` | D1 schema and indexes |
 | `wrangler.jsonc` | Cloudflare deployment configuration |
 | `scripts/` | Judge CLI, token creation, migration scaffolding, demo fixtures, config checks |
 | `README.md` | This file |
 
-The lanes are developed in waves, so some paths may still be in flight.
-The API lane lands after the foundation and judge lanes. Until then the
-local test suites and the judge CLI are the runnable surfaces.
+### Supported languages
+
+| ID | Compile/check stage | Execution |
+|---|---|---|
+| `cpp17` | GCC, `-std=c++17 -O2 -pipe` | native binary |
+| `c17` | GCC, `-std=c17 -O2 -pipe` | native binary |
+| `python3` | fixed `py_compile` syntax check | isolated Python (`-I -B`) |
+| `javascript` | fixed Node.js syntax check | Node.js with addons disabled |
+
+Problem versions select a subset through their immutable `languagePolicy`.
+Commands, flags, filenames, execution arguments, and memory-accounting mode
+come from the trusted registry in `src/judge/languages.ts`; source text is
+never interpolated into a command. Native programs receive address-space plus
+RSS/cgroup limits. Managed runtimes use RSS/cgroup memory enforcement so large
+virtual reservations by V8 or Python are not mistaken for resident memory.
 
 ## Local vs Cloudflare: the adapter boundary
 
@@ -68,7 +80,7 @@ section 59).
 | GET | `/api/v1/health` | none | Liveness; never runs participant code |
 | GET | `/api/v1/problems` | any | List active problems |
 | GET | `/api/v1/problems/:problemId` | any | Problem details (no hidden tests) |
-| POST | `/api/v1/submissions` | PARTICIPANT, ADMIN | Submit C++17 source, returns `202` + `submissionId` |
+| POST | `/api/v1/submissions` | PARTICIPANT, ADMIN | Submit supported source code, returns `202` + `submissionId` |
 | GET | `/api/v1/submissions` | PARTICIPANT | Own submissions only (filtered by token identity) |
 | GET | `/api/v1/submissions/:submissionId` | PARTICIPANT | Own submission result |
 | GET | `/api/v1/leaderboard` | any | Per-problem leaderboard |
@@ -183,7 +195,7 @@ hostile, even after it compiles.
 
 ## Setup
 
-Prerequisites: [Bun](https://bun.sh) 1.x, a C++17 compiler (`g++`), and
+Prerequisites: [Bun](https://bun.sh) 1.x, GCC/G++, Python 3, Node.js, and
 GNU coreutils. No Cloudflare account is needed for local work.
 
 ```bash
@@ -298,7 +310,7 @@ Secrets are never stored in `wrangler.jsonc`; use `wrangler secret put`.
 ## R2 object layout
 
 ```
-submissions/{submissionId}/source.cpp
+submissions/{submissionId}/source.{cpp|c|py|cjs}
 problems/{problemId}/{problemVersion}/tests/001.in
 problems/{problemId}/{problemVersion}/tests/001.out
 problems/{problemId}/{problemVersion}/benchmarks/001.in
@@ -322,9 +334,11 @@ trusted RSS. Wall time is recorded but never scored. Queue delay, cold
 start, compilation, R2, and D1 time never enter the score.
 
 Leaderboard: accepted submissions only, best score per participant per
-problem, lower CPU score wins, then lower peak memory, then earlier
-completion. `performance_score_ns` is stored as an integer; no floating
-point in ranking math.
+problem and language, lower CPU score wins, then lower peak memory, then
+earlier completion. Each language receives its own rank sequence because raw
+native and interpreter CPU times are not fairly comparable.
+`performance_score_ns` is stored as an integer; no floating point enters
+ranking math.
 
 ## Judging pipeline (per attempt)
 
@@ -374,10 +388,10 @@ bunx wrangler deploy   # builds + pushes the container image, deploys worker
 
 ## Known limits
 
-- C++17 only; language adapters are an extension point, not a feature yet.
-- Sandbox SDK 1.0 is a preview. Pin the exact `@cloudflare/sandbox@next`
-  version and keep the worker package and container image on the same
-  preview line.
+- Supported runtimes are C++17, C17, Python 3, and JavaScript. Compiler,
+  syntax-check, interpreter, and execution flags are fixed by trusted adapters.
+- The project currently uses stable Sandbox SDK 0.12.9. Keep the Worker package
+  and `cloudflare/sandbox:0.12.9` image on the same release line.
 - D1 processes queries serially on one database; keep writes compact and
   queries indexed (`migrations/0002_indexes.sql`).
 - Perfect timing determinism is impossible on shared cloud hardware. The

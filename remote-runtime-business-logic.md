@@ -447,13 +447,17 @@ depending on API convention.
 
 ### 8.4 Language validation
 
-Initial accepted language:
+Implemented language identifiers:
 
 ```text
 cpp17
+c17
+python3
+javascript
 ```
 
-Anything else:
+Each immutable problem version selects a non-empty subset. Anything else, or a
+supported language disabled for that problem version, returns:
 
 ```text
 UNSUPPORTED_LANGUAGE
@@ -2242,11 +2246,12 @@ Contest solutions should not depend on host locale.
 
 ## 84. No Arbitrary Dependency Installation
 
-Initial C++17 runtime uses:
+The supported runtimes use only their standard libraries and fixed,
+preinstalled toolchains:
 
 ```text
-standard library
-preinstalled fixed toolchain
+standard library/runtime
+preinstalled fixed toolchain or interpreter
 ```
 
 Do not allow:

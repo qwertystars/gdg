@@ -32,7 +32,7 @@ The architecture maps those requirements as follows.
 | Remote code execution | Cloudflare Sandbox SDK / Containers |
 | Compile submitted code | Fixed compiler inside pinned sandbox image |
 | Execute submitted code | Trusted `judge-runner` launches untrusted executable |
-| Optional multi-language support | Initial implementation supports C++17 only; language adapters remain extensible |
+| Optional multi-language support | Trusted adapters support C++17, C17, Python 3, and JavaScript |
 | Algorithmic efficiency | CPU time, wall time, and peak memory are collected |
 | Deterministic judgment | Pinned environment, versioned tests, fixed limits, no Internet, repeated benchmark runs |
 | Process preemption | Queue retries + D1 execution lease + idempotent state transitions |
@@ -840,7 +840,10 @@ Each adapter defines:
 - compile timeout
 - runtime environment
 
-Only `Cpp17Adapter` needs to exist initially.
+The implemented registry contains `Cpp17Adapter`, `C17Adapter`,
+`Python3Adapter`, and `JavaScriptAdapter`. Every adapter owns fixed source
+filenames, compile/syntax-check commands, interpreter flags, and memory mode;
+participant source never supplies command-line arguments.
 
 ---
 
