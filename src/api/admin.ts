@@ -23,6 +23,7 @@ import {
   newTestCaseId,
 } from "../domain/ids";
 import { TEST_INPUT_R2_PREFIX } from "../domain/seed";
+import { isSubmissionLanguage, SUPPORTED_LANGUAGES } from "../judge/languages";
 import type { ArtifactStore } from "../storage/artifact-store";
 import type { Repository } from "../storage/repository";
 import { participantIdOf, requireAdmin, requireAuth } from "./auth";
@@ -136,16 +137,25 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
     const fields = await parseJson(c);
     const version = fields.version;
     if (typeof version !== "number") throw new ApiError(400, "version required");
+    const requestedLanguages = fields.languages ?? SUPPORTED_LANGUAGES;
+    if (
+      !Array.isArray(requestedLanguages) ||
+      requestedLanguages.length === 0 ||
+      !requestedLanguages.every((language) => typeof language === "string" && isSubmissionLanguage(language))
+    ) {
+      throw new ApiError(400, "languages must be a non-empty array of supported language ids");
+    }
     const existing = await repo.findProblemVersion(problem.id, version);
     if (existing !== null) throw new ApiError(409, "version already exists");
     const nowMs = deps.nowMs?.() ?? Date.now();
     await repo.createProblemVersion({
       problemId: problem.id,
       version,
-      languagePolicy: "cpp17",
-      compilerImageVersion: "gcc-13.2.0-cpp17",
+      languagePolicy: requestedLanguages.join(","),
+      compilerImageVersion: "gcc-12_python3_nodejs",
       comparatorVersion: "normalized-v1",
       runnerImageVersion: "judge-runner-v1",
+      limits: { ...problem.limits },
       nowMs,
     });
     await repo.createAuditLog({
@@ -158,7 +168,7 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       detailJson: JSON.stringify({ version }),
       nowMs,
     });
-    return c.json({ problemId: problem.id, version }, 201);
+    return c.json({ problemId: problem.id, version, languages: requestedLanguages }, 201);
   });
 
   app.post("/problems/:problemId/versions/:version/tests", async (c) => {
@@ -241,9 +251,8 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       throw new ApiError(409, "cannot activate a version with no test cases");
     }
     const nowMs = deps.nowMs?.() ?? Date.now();
-    problem.lifecycleState = "ACTIVE";
-    problem.activeVersion = version;
-    problem.updatedAtMs = nowMs;
+    const activated = await repo.activateProblemVersion(problem.id, version, nowMs);
+    if (activated === null) throw new ApiError(409, "problem version could not be activated");
     await repo.createAuditLog({
       id: newAuditLogId(),
       actorId: participantIdOf(auth),
@@ -254,7 +263,11 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       detailJson: JSON.stringify({ version }),
       nowMs,
     });
-    return c.json({ id: problem.id, lifecycleState: "ACTIVE", activeVersion: version });
+    return c.json({
+      id: activated.id,
+      lifecycleState: activated.lifecycleState,
+      activeVersion: activated.activeVersion,
+    });
   });
 
   app.post("/problems/:problemId/close", async (c) => {
@@ -302,7 +315,18 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       detailJson: JSON.stringify({ fromStatus: submission.status, problemId: submission.problemId }),
       nowMs,
     });
-    await deps.queue.enqueue(submission.id);
+    await repo.markDispatchAttempt(submission.id, nowMs);
+    try {
+      await deps.queue.enqueue(submission.id);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "rejudge_dispatch_failed",
+          submissionId: submission.id,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
     return c.json({ submissionId: submission.id, status: "QUEUED" }, 202);
   });
 

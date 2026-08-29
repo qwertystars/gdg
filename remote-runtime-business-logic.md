@@ -447,13 +447,17 @@ depending on API convention.
 
 ### 8.4 Language validation
 
-Initial accepted language:
+Implemented language identifiers:
 
 ```text
 cpp17
+c17
+python3
+javascript
 ```
 
-Anything else:
+Each immutable problem version selects a non-empty subset. Anything else, or a
+supported language disabled for that problem version, returns:
 
 ```text
 UNSUPPORTED_LANGUAGE
@@ -2242,11 +2246,12 @@ Contest solutions should not depend on host locale.
 
 ## 84. No Arbitrary Dependency Installation
 
-Initial C++17 runtime uses:
+The supported runtimes use only their standard libraries and fixed,
+preinstalled toolchains:
 
 ```text
-standard library
-preinstalled fixed toolchain
+standard library/runtime
+preinstalled fixed toolchain or interpreter
 ```
 
 Do not allow:
@@ -2705,7 +2710,8 @@ This business logic depends on the following current Cloudflare platform behavio
 - Sandboxes/Containers are ephemeral execution environments.
 - Sandbox lifecycle supports explicit destruction.
 - Public outbound Internet can be disabled.
-- Sandbox 1.0 preview exposes supervised process handles, process kill, and remote lifetime timeout.
+- Stable Sandbox SDK 0.12.9 provides the container command surface; the pinned
+  native runner owns process groups, trusted resource metrics, kill, and timeout.
 - Container placement can be constrained to APAC.
 - D1 is suitable for compact indexed relational state but a single database processes queries serially.
 - R2 is appropriate for source/test file objects.
@@ -2715,8 +2721,8 @@ Cloudflare limits and preview APIs should be verified again before final deploym
 References:
 
 - https://developers.cloudflare.com/sandbox/
-- https://developers.cloudflare.com/sandbox/1-0-preview/
-- https://developers.cloudflare.com/sandbox/1-0-preview/processes/
+- https://developers.cloudflare.com/sandbox/
+- https://developers.cloudflare.com/containers/
 - https://developers.cloudflare.com/sandbox/guides/outbound-traffic/
 - https://developers.cloudflare.com/containers/platform-details/placement/
 - https://developers.cloudflare.com/containers/platform-details/limits/

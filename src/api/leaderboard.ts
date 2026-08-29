@@ -9,6 +9,7 @@
 
 import { Hono } from "hono";
 import type { SubmissionRecord } from "../domain/entities";
+import type { SubmissionLanguage } from "../domain/enums";
 import { asProblemId } from "../domain/ids";
 import type { Repository } from "../storage/repository";
 import { requireAuth } from "./auth";
@@ -19,6 +20,7 @@ export interface LeaderboardEntry {
   participantId: string;
   problemId: string;
   submissionId: string;
+  language: SubmissionLanguage;
   performanceScoreNs: number;
   peakMemoryKb: number;
   completedAtMs: number;
@@ -28,15 +30,21 @@ function entryTuple(entry: LeaderboardEntry): [number, number, number] {
   return [entry.performanceScoreNs, entry.peakMemoryKb, entry.completedAtMs];
 }
 
-export function computeLeaderboard(rows: readonly SubmissionRecord[], problemId: string): LeaderboardEntry[] {
+function computeLanguageLeaderboard(
+  rows: readonly SubmissionRecord[],
+  problemId: string,
+  language: SubmissionLanguage,
+): LeaderboardEntry[] {
   const accepted: Array<{
     submissionId: string;
     participantId: string;
     performanceScoreNs: number;
     peakMemoryKb: number;
     completedAtMs: number;
+    language: SubmissionLanguage;
   }> = [];
   for (const row of rows) {
+    if (row.status !== "ACCEPTED" || row.language !== language) continue;
     if (row.performanceScoreNs === null || row.peakMemoryKb === null || row.completedAtMs === null) continue;
     accepted.push({
       submissionId: row.id,
@@ -44,6 +52,7 @@ export function computeLeaderboard(rows: readonly SubmissionRecord[], problemId:
       performanceScoreNs: row.performanceScoreNs,
       peakMemoryKb: row.peakMemoryKb,
       completedAtMs: row.completedAtMs,
+      language: row.language,
     });
   }
   const byParticipant = new Map<string, (typeof accepted)[number]>();
@@ -73,6 +82,7 @@ export function computeLeaderboard(rows: readonly SubmissionRecord[], problemId:
       participantId: row.participantId,
       problemId,
       submissionId: row.submissionId,
+      language: row.language,
       performanceScoreNs: row.performanceScoreNs,
       peakMemoryKb: row.peakMemoryKb,
       completedAtMs: row.completedAtMs,
@@ -87,6 +97,15 @@ export function computeLeaderboard(rows: readonly SubmissionRecord[], problemId:
     })
     .map((entry, index) => ({ ...entry, rank: index + 1 }));
   return entries;
+}
+
+/**
+ * Raw CPU times from different runtime families are not comparable. Return a
+ * separate rank sequence per language, flattened in stable language-id order.
+ */
+export function computeLeaderboard(rows: readonly SubmissionRecord[], problemId: string): LeaderboardEntry[] {
+  const languages = [...new Set(rows.map((row) => row.language))].sort();
+  return languages.flatMap((language) => computeLanguageLeaderboard(rows, problemId, language));
 }
 
 export function leaderboardRoutes(repo: Repository): Hono {

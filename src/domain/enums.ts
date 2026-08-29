@@ -43,7 +43,7 @@ export type SubmissionStatus =
 
 export type JudgeAttemptStatus = "CLAIMED" | "RUNNING" | "SUCCEEDED" | "FAILED_RETRYABLE" | "FAILED_TERMINAL";
 
-export type SubmissionLanguage = "cpp17";
+export type SubmissionLanguage = "cpp17" | "c17" | "python3" | "javascript";
 
 /** The judge lane's classification names; the submission statuses use the same spelling. */
 export type RunClassification =

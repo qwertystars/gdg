@@ -1,12 +1,30 @@
 # Local judge driver
 
-From the repository root, run one C++17 fixture through the local judge with:
+From the repository root, run a fixture through the local judge with:
 
 ```sh
 bun runner/judge-driver.ts \
+  --language cpp17 \
   --source tests/judge/fixtures/accepted.cpp \
   --input tests/judge/fixtures/input.txt \
   --expected tests/judge/fixtures/expected.txt
 ```
 
-The driver compiles the participant once, invokes the native `judge-runner` supervisor for each test, and prints only the public result JSON. The expected output and participant stdout stay out of that serialization. `judge-runner` creates a process group, enforces wall/CPU/address-space/process/output limits, records trusted metrics, and kills the complete group before returning.
+Supported language identifiers are `cpp17`, `c17`, `python3`, and
+`javascript`. C and C++ are compiled with fixed optimization flags; Python and
+JavaScript receive a fixed syntax-check stage before execution.
+
+The driver compiles/checks the participant once, invokes the native
+`judge-runner` supervisor for each test, and prints only the public result JSON.
+The expected output and participant stdout stay out of that serialization.
+`judge-runner` creates a process group, enforces wall/CPU/memory/process/output
+limits, records trusted metrics, and kills the complete group before returning.
+Native programs also receive an address-space limit. Managed runtimes use
+cgroup/aggregate-RSS memory accounting because their virtual address-space
+reservation is not equivalent to resident memory.
+
+Compilation and syntax checks also run under `judge-runner`, with their own
+immutable wall-time, CPU, memory, process, file-descriptor, and diagnostic
+output limits. The compiler receives the same minimal environment and dropped
+privileges as participant execution; only its disposable build directory is
+writable.

@@ -32,7 +32,7 @@ The architecture maps those requirements as follows.
 | Remote code execution | Cloudflare Sandbox SDK / Containers |
 | Compile submitted code | Fixed compiler inside pinned sandbox image |
 | Execute submitted code | Trusted `judge-runner` launches untrusted executable |
-| Optional multi-language support | Initial implementation supports C++17 only; language adapters remain extensible |
+| Optional multi-language support | Trusted adapters support C++17, C17, Python 3, and JavaScript |
 | Algorithmic efficiency | CPU time, wall time, and peak memory are collected |
 | Deterministic judgment | Pinned environment, versioned tests, fixed limits, no Internet, repeated benchmark runs |
 | Process preemption | Queue retries + D1 execution lease + idempotent state transitions |
@@ -150,7 +150,10 @@ The Sandbox SDK is specifically intended for isolated code execution from Worker
 - outbound network controls
 - VM-backed isolation through Cloudflare Containers
 
-Cloudflare currently recommends the Sandbox SDK 1.0 preview for new projects. The implementation should pin an exact package version rather than follow an unbounded `latest` dependency.
+The implementation uses stable `@cloudflare/sandbox` 0.12.9 and pins the
+matching container base by digest rather than following an unbounded `latest`
+dependency. The trusted native runner supplies the process supervision needed
+by this design.
 
 Example design:
 
@@ -840,7 +843,10 @@ Each adapter defines:
 - compile timeout
 - runtime environment
 
-Only `Cpp17Adapter` needs to exist initially.
+The implemented registry contains `Cpp17Adapter`, `C17Adapter`,
+`Python3Adapter`, and `JavaScriptAdapter`. Every adapter owns fixed source
+filenames, compile/syntax-check commands, interpreter flags, and memory mode;
+participant source never supplies command-line arguments.
 
 ---
 
@@ -961,7 +967,8 @@ Purpose:
 - kill programs sleeping forever;
 - protect against cases where CPU limits alone are insufficient.
 
-The Sandbox 1.0 preview process API supports a remote process lifetime timeout and explicit `kill()`.
+The stable Sandbox SDK provides the container command surface; the native
+`judge-runner` supplies process-group lifetime, timeout, kill, and accounting.
 
 ### Memory limit
 
@@ -2086,8 +2093,9 @@ The supplied brief explicitly prioritizes a strong working core over feature com
 1. **Perfect timing determinism is impossible to promise on shared cloud hardware.**
    The architecture mitigates variance using one-vCPU instances, APAC placement, repeated runs, median CPU time, and same-sandbox benchmarking.
 
-2. **Sandbox SDK 1.0 is a preview.**
-   Pin the exact version and document it. If stability is more important than preview process APIs, the stable SDK can be used with equivalent supervision implemented by the trusted runner.
+2. **Sandbox SDK and container image must remain aligned.**
+   This repository pins stable SDK 0.12.9 and the matching base-image digest;
+   upgrades require rebuilding and rerunning the remote disruption matrix.
 
 3. **D1 is single-threaded per database.**
    Keep writes compact and queries indexed. At event scale with ten concurrent judges this is expected to be sufficient.
@@ -2142,8 +2150,8 @@ Platform details in this architecture should be rechecked before final deploymen
 - Sandbox SDK overview: https://developers.cloudflare.com/sandbox/
 - Sandbox architecture: https://developers.cloudflare.com/sandbox/concepts/architecture/
 - Sandbox lifecycle: https://developers.cloudflare.com/sandbox/concepts/sandboxes/
-- Sandbox 1.0 preview: https://developers.cloudflare.com/sandbox/1-0-preview/
-- Sandbox 1.0 process execution: https://developers.cloudflare.com/sandbox/1-0-preview/processes/
+- Sandbox SDK: https://developers.cloudflare.com/sandbox/
+- Containers: https://developers.cloudflare.com/containers/
 - Sandbox outbound traffic: https://developers.cloudflare.com/sandbox/guides/outbound-traffic/
 - Containers limits and instance types: https://developers.cloudflare.com/containers/platform-details/limits/
 - Containers placement: https://developers.cloudflare.com/containers/platform-details/placement/

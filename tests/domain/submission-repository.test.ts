@@ -24,6 +24,7 @@ async function createSubmission(repo: MemoryRepository): Promise<SubmissionRecor
     problemId: SEED_PROBLEM_ID,
     language: "cpp17",
     sourceR2Key: sourceR2KeyFor(newSubmissionId()),
+    sourceSha256: "0".repeat(64),
     nowMs: NOW,
   });
 }
@@ -62,6 +63,7 @@ describe("submission repository lifecycle", () => {
         problemId: SEED_PROBLEM_ID,
         language: "cpp17",
         sourceR2Key: "submissions/x/source.cpp",
+        sourceSha256: "0".repeat(64),
         nowMs: NOW,
       }),
     ).rejects.toThrow(/active version/);

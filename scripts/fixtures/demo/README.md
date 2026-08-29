@@ -2,7 +2,8 @@
 
 This directory contains a small demo problem, "double the input", plus
 participant source files that produce the participant-controlled outcomes
-from the judging state machine. They are plain text and C++ fixtures, no
+from the judging state machine. They cover every supported runtime, with C++
+also carrying the adversarial failure fixtures; no participant fixture is
 TypeScript. The foundation lane seeds the same problem into the local
 repository; the judge lane's `runner/judge-driver.ts` and
 `tests/judge/fixtures/` cover the same scenarios at the engine level.
@@ -12,7 +13,7 @@ repository; the judge lane's `runner/judge-driver.ts` and
 Read an integer from stdin, print twice its value to stdout.
 
 - ID: `double`
-- Language: `cpp17`
+- Languages: `cpp17`, `c17`, `python3`, `javascript`
 - Time limit: 2000 ms (wall), 1500 ms (CPU)
 - Memory limit: 262144 KB (256 MiB)
 - Output limit: 1048576 bytes (1 MiB)
@@ -37,6 +38,9 @@ problems/double/v1/benchmarks/001.out
 | File | Expected status | Why |
 |---|---|---|
 | `accepted.cpp` | `ACCEPTED` | correct solution |
+| `accepted.c` | `ACCEPTED` | correct C17 solution |
+| `accepted.py` | `ACCEPTED` | correct Python 3 solution |
+| `accepted.cjs` | `ACCEPTED` | correct JavaScript solution |
 | `compile-error.cpp` | `COMPILE_ERROR` | missing semicolon |
 | `wrong-answer.cpp` | `WRONG_ANSWER` | hard-coded output |
 | `infinite-loop.cpp` | `TIME_LIMIT_EXCEEDED` | busy loop |
@@ -56,6 +60,7 @@ With the local judge driver (the judge lane's script):
 
 ```bash
 bun run judge:local -- \
+  --language cpp17 \
   --source scripts/fixtures/demo/sources/accepted.cpp \
   --input scripts/fixtures/demo/tests/001.in \
   --expected scripts/fixtures/demo/tests/001.out
@@ -65,6 +70,7 @@ Or directly, before package.json exists:
 
 ```bash
 bun runner/judge-driver.ts -- \
+  --language cpp17 \
   --source scripts/fixtures/demo/sources/accepted.cpp \
   --input scripts/fixtures/demo/tests/001.in \
   --expected scripts/fixtures/demo/tests/001.out

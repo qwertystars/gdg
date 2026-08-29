@@ -205,6 +205,7 @@ export class MemoryRepository implements Repository {
     compilerImageVersion: string;
     comparatorVersion: string;
     runnerImageVersion: string;
+    limits: ProblemRecord["limits"];
     nowMs: number;
   }): Promise<ProblemVersionRecord> {
     if (this.problemVersions.has(versionKey(input.problemId, input.version))) {
@@ -217,10 +218,20 @@ export class MemoryRepository implements Repository {
       compilerImageVersion: input.compilerImageVersion,
       comparatorVersion: input.comparatorVersion,
       runnerImageVersion: input.runnerImageVersion,
+      limits: { ...input.limits },
       createdAtMs: input.nowMs,
     };
     this.problemVersions.set(versionKey(input.problemId, input.version), record);
     return record;
+  }
+
+  async activateProblemVersion(problemId: ProblemId, version: number, nowMs: number): Promise<ProblemRecord | null> {
+    const problem = this.problems.get(problemId);
+    if (!problem || !this.problemVersions.has(versionKey(problemId, version))) return null;
+    problem.lifecycleState = "ACTIVE";
+    problem.activeVersion = version;
+    problem.updatedAtMs = nowMs;
+    return problem;
   }
 
   async createTestCase(input: {
@@ -275,10 +286,13 @@ export class MemoryRepository implements Repository {
       problemVersion: version,
       language: input.language,
       sourceR2Key: input.sourceR2Key,
+      sourceSha256: input.sourceSha256,
       status: "CREATED",
       attemptCount: 0,
       executionToken: null,
       leaseUntilMs: null,
+      dispatchAttempts: 0,
+      lastDispatchAtMs: null,
       compilerVersion: null,
       compilerFlags: null,
       runnerImageVersion: null,
@@ -393,6 +407,25 @@ export class MemoryRepository implements Repository {
     record.leaseUntilMs = null;
     record.updatedAtMs = nowMs;
     return record;
+  }
+
+  async markDispatchAttempt(id: SubmissionId, nowMs: number): Promise<void> {
+    const record = this.submissions.get(id);
+    if (!record) return;
+    record.dispatchAttempts++;
+    record.lastDispatchAtMs = nowMs;
+    record.updatedAtMs = nowMs;
+  }
+
+  async listDispatchableSubmissions(beforeMs: number, limit: number): Promise<SubmissionRecord[]> {
+    return [...this.submissions.values()]
+      .filter(
+        (record) =>
+          (record.status === "CREATED" || record.status === "QUEUED" || record.status === "JUDGE_RETRY") &&
+          (record.lastDispatchAtMs === null || record.lastDispatchAtMs <= beforeMs),
+      )
+      .sort((a, b) => a.createdAtMs - b.createdAtMs)
+      .slice(0, limit);
   }
 
   // Attempts and per-test results -------------------------------------------

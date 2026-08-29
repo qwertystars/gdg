@@ -14,6 +14,7 @@ import type { Hono } from "hono";
 import { createApp } from "./api/app";
 import { buildLocalRuntime, type LocalRuntime } from "./api/local-runtime";
 import { LocalQueueAdapter, type SubmissionQueue } from "./api/queue-adapter";
+import { reconcileSubmissionDispatches } from "./api/reconcile";
 import { bootstrapCloudflare } from "./cloudflare/bootstrap";
 import { asSubmissionId, type SubmissionId } from "./domain/ids";
 import type { Judge } from "./judge";
@@ -57,6 +58,10 @@ interface ExecutionContext {
   passThroughOnException(): void;
   props: unknown;
   exports?: unknown;
+}
+
+interface ScheduledController {
+  readonly scheduledTime: number;
 }
 
 interface QueueMessage {
@@ -179,6 +184,14 @@ export default {
         throw error;
       }
     }
+  },
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const rt = await getRuntime(env);
+    ctx.waitUntil(
+      reconcileSubmissionDispatches(rt.repo, rt.queue, controller.scheduledTime).then((count) => {
+        if (count > 0) console.log(JSON.stringify({ event: "submission_dispatch_reconciled", count }));
+      }),
+    );
   },
 } as const;
 

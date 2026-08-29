@@ -29,15 +29,16 @@ import type {
   SubmissionTestResultRecord,
   TestCaseRecord,
 } from "../domain/entities";
-import type { ComparatorPolicy, Role, SubmissionStatus, TestCaseKind } from "../domain/enums";
+import type { ComparatorPolicy, Role, SubmissionLanguage, SubmissionStatus, TestCaseKind } from "../domain/enums";
 import type { ApiTokenId, AuditLogId, ParticipantId, ProblemId, SubmissionId, TestCaseId } from "../domain/ids";
 import type { ClaimOutcome, ClaimRequest, SubmitResultOutcome, SubmitResultRequest } from "../domain/state";
 
 export interface CreateSubmissionInput {
   participantId: ParticipantId;
   problemId: ProblemId;
-  language: "cpp17";
+  language: SubmissionLanguage;
   sourceR2Key: string;
+  sourceSha256: string;
   nowMs: number;
 }
 
@@ -105,8 +106,11 @@ export interface Repository {
     compilerImageVersion: string;
     comparatorVersion: string;
     runnerImageVersion: string;
+    limits: ProblemRecord["limits"];
     nowMs: number;
   }): Promise<ProblemVersionRecord>;
+  /** Atomically make an existing, tested version active. */
+  activateProblemVersion(problemId: ProblemId, version: number, nowMs: number): Promise<ProblemRecord | null>;
   /** Create a test case row and persist its artifacts via the store. */
   createTestCase(input: {
     id: TestCaseId;
@@ -140,6 +144,10 @@ export interface Repository {
    * a fresh judge attempt can claim it. Leaves attempt history intact.
    */
   resetForRejudge(id: SubmissionId, nowMs: number): Promise<SubmissionRecord | null>;
+  /** Mark a Queue delivery attempt; used by the scheduled recovery scanner. */
+  markDispatchAttempt(id: SubmissionId, nowMs: number): Promise<void>;
+  /** In-flight rows whose Queue message may have been lost. */
+  listDispatchableSubmissions(beforeMs: number, limit: number): Promise<SubmissionRecord[]>;
 
   // Attempts and per-test results -------------------------------------------
   createJudgeAttempt(input: CreateJudgeAttemptInput): Promise<JudgeAttemptRecord>;

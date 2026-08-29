@@ -68,10 +68,11 @@ function insertSubmission(
   status: string,
   executionToken: string | null,
   leaseUntilMs: number | null,
+  language = "cpp17",
 ): void {
   db.exec(
     `INSERT INTO submissions (id, participant_id, problem_id, problem_version, language, source_r2_key, status, attempt_count, execution_token, lease_until, created_at, updated_at)
-     VALUES ('${id}', 'participant_seed_alpha', 'problem_seed_two_sum', 1, 'cpp17', 'submissions/${id}/source.cpp', '${status}', 1, ${
+     VALUES ('${id}', 'participant_seed_alpha', 'problem_seed_two_sum', 1, '${language}', 'submissions/${id}/source.cpp', '${status}', 1, ${
        executionToken === null ? "NULL" : `'${executionToken}'`
 }, ${leaseUntilMs === null ? "NULL" : `'${iso(leaseUntilMs)}'`}, '${iso(NOW)}', '${iso(NOW)}')`,
   );
@@ -94,6 +95,12 @@ afterEach(() => {
 });
 
 describe("D1Repository claimExecution (backend 11 claim predicate)", () => {
+  test("maps the persisted submission language instead of assuming C++", async () => {
+    insertSubmission("sub_python", "QUEUED", null, null, "python3");
+    const stored = await repo.findSubmissionById(submissions[0]!);
+    expect(stored?.language).toBe("python3");
+  });
+
   test("an expired-lease RUNNING attempt is reclaimed with a fresh token and incremented attempt count", async () => {
     insertSubmission("sub_expired", "RUNNING", "old-token", NOW - 10_000);
     const id = submissions[0]!;

@@ -1,16 +1,9 @@
 // Memory overflow demo. Allocates far past the 256 MiB problem limit.
 //
-// Outcome note: with the current local judge-runner, this is classified as
-// RUNTIME_ERROR. The runner sets RLIMIT_AS to the memory limit, so the
-// process runs out of address space, the allocation throws std::bad_alloc,
-// and the abort is reported as a runtime error. The runner's aggregate
-// process-group sampler (which produces MEMORY_LIMIT_EXCEEDED) only fires
-// when the group RSS crosses the limit, and a single process can never get
-// there because RLIMIT_AS caps it first.
-//
-// A true MEMORY_LIMIT_EXCEEDED demo needs multiple processes whose
-// combined RSS crosses the limit. The judge lane owns the runner and its
-// classifications; when it adds such a fixture, mirror it here.
+// Under delegated cgroup v2, memory.max produces an authoritative OOM event.
+// The local RLIMIT_AS fallback observes peak virtual size near the hard limit
+// so a failed allocation is classified as MEMORY_LIMIT_EXCEEDED rather than
+// an ambiguous non-zero runtime exit.
 #include <vector>
 
 int main() {

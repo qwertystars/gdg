@@ -33,6 +33,7 @@ async function acceptedSubmission(repo: MemoryRepository): Promise<SubmissionId>
     problemId: SEED_PROBLEM_ID,
     language: "cpp17",
     sourceR2Key: sourceR2KeyFor(asSubmissionId("sub_seed_rejudge_target")),
+    sourceSha256: "0".repeat(64),
     nowMs: NOW,
   });
   const claim = await repo.claimExecution({
@@ -127,6 +128,7 @@ describe("resetForRejudge repository behavior", () => {
       problemId: SEED_PROBLEM_ID,
       language: "cpp17",
       sourceR2Key: sourceR2KeyFor(asSubmissionId("sub_seed_queued")),
+      sourceSha256: "0".repeat(64),
       nowMs: NOW,
     });
     await repo.setSubmissionStatus(submission.id, "QUEUED", NOW);

@@ -72,7 +72,12 @@ export class LocalCpp17Judge {
     let compilerOutput: string | undefined;
     try {
       sandbox = await sandboxAdapter.create(`local-${Date.now()}`, root);
-      const compiled = await this.compiler.compile(request.source, join(root, "build"));
+      const compiled = await this.compiler.compile(
+        request.source,
+        join(root, "build"),
+        request.language ?? "cpp17",
+        request.compileLimits,
+      );
       if (!compiled.ok) {
         status = "COMPILE_ERROR";
         compilerOutput = compiled.output;
@@ -82,6 +87,8 @@ export class LocalCpp17Judge {
           const run = await this.runOne(
             sandbox,
             compiled.binaryPath,
+            compiled.args,
+            compiled.memoryAccounting,
             root,
             test.id,
             test.input,
@@ -108,6 +115,8 @@ export class LocalCpp17Judge {
             await this.runOne(
               sandbox,
               compiled.binaryPath,
+              compiled.args,
+              compiled.memoryAccounting,
               root,
               `${test.id}-warmup`,
               test.input,
@@ -119,6 +128,8 @@ export class LocalCpp17Judge {
               const run = await this.runOne(
                 sandbox,
                 compiled.binaryPath,
+                compiled.args,
+                compiled.memoryAccounting,
                 root,
                 `${test.id}-${runNumber + 1}`,
                 test.input,
@@ -163,6 +174,8 @@ export class LocalCpp17Judge {
   private async runOne(
     sandbox: SandboxSession,
     binaryPath: string,
+    args: string[],
+    memoryAccounting: "address-space" | "rss",
     root: string,
     testId: string,
     input: string,
@@ -178,6 +191,8 @@ export class LocalCpp17Judge {
     await mkdir(join(root, "metrics"), { recursive: true });
     const execution = await sandbox.execute({
       binaryPath,
+      args,
+      memoryAccounting,
       inputPath,
       stdoutPath,
       stderrPath,
