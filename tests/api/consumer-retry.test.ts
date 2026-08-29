@@ -47,6 +47,7 @@ async function queuedSubmission(repo: MemoryRepository, store: LocalArtifactStor
     problemId: SEED_PROBLEM_ID,
     language: "cpp17",
     sourceR2Key: sourceR2KeyFor(id),
+    sourceSha256: "80a7161009ffaf868641acac3f5e49bc5f86021ee1d177f3b1cbb47573513649",
     nowMs: NOW,
   });
   await store.write(submission.sourceR2Key, "int main() { return 0; }");

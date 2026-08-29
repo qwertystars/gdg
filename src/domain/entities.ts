@@ -62,6 +62,8 @@ export interface ProblemVersionRecord {
   compilerImageVersion: string;
   comparatorVersion: string;
   runnerImageVersion: string;
+  /** Immutable judge limits snapshotted when this version is created. */
+  limits: ProblemLimits;
   createdAtMs: number;
 }
 
@@ -88,10 +90,14 @@ export interface SubmissionRecord {
   problemVersion: number;
   language: SubmissionLanguage;
   sourceR2Key: string;
+  /** SHA-256 of the exact UTF-8 source bytes accepted by the API. */
+  sourceSha256: string;
   status: SubmissionStatus;
   attemptCount: number;
   executionToken: string | null;
   leaseUntilMs: number | null;
+  dispatchAttempts: number;
+  lastDispatchAtMs: number | null;
   compilerVersion: string | null;
   compilerFlags: string | null;
   runnerImageVersion: string | null;

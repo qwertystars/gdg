@@ -101,6 +101,7 @@ const problemVersions: readonly ProblemVersionRecord[] = [
     compilerImageVersion: "gcc-12_python3_nodejs",
     comparatorVersion: "normalized-v1",
     runnerImageVersion: "judge-runner-v1",
+    limits: { ...problems[0]!.limits },
     createdAtMs: EPOCH_MS,
   },
 ];

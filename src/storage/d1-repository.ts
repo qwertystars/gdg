@@ -251,6 +251,13 @@ export class D1Repository implements Repository {
       compilerImageVersion: emptyString(r.compiler_image_version),
       comparatorVersion: emptyString(r.comparator_version),
       runnerImageVersion: emptyString(r.runner_image_version),
+      limits: {
+        timeLimitMs: Number(r.time_limit_ms),
+        memoryLimitKb: Number(r.memory_limit_kb),
+        outputLimitBytes: Number(r.output_limit_bytes),
+        compileTimeLimitMs: Number(r.compile_time_limit_ms),
+        compileOutputLimitBytes: Number(r.compile_output_limit_bytes),
+      },
       createdAtMs: parseMs(r.created_at) ?? 0,
     };
   }
@@ -327,12 +334,14 @@ export class D1Repository implements Repository {
     compilerImageVersion: string;
     comparatorVersion: string;
     runnerImageVersion: string;
+    limits: ProblemRecord["limits"];
     nowMs: number;
   }): Promise<ProblemVersionRecord> {
     await this.db
       .prepare(
-        `INSERT INTO problem_versions (problem_id, version, language_policy, compiler_image_version, comparator_version, runner_image_version, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO problem_versions (problem_id, version, language_policy, compiler_image_version, comparator_version, runner_image_version,
+           time_limit_ms, memory_limit_kb, output_limit_bytes, compile_time_limit_ms, compile_output_limit_bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         input.problemId,
@@ -341,6 +350,11 @@ export class D1Repository implements Repository {
         input.compilerImageVersion,
         input.comparatorVersion,
         input.runnerImageVersion,
+        input.limits.timeLimitMs,
+        input.limits.memoryLimitKb,
+        input.limits.outputLimitBytes,
+        input.limits.compileTimeLimitMs,
+        input.limits.compileOutputLimitBytes,
         iso(input.nowMs),
       )
       .run();
@@ -401,8 +415,8 @@ export class D1Repository implements Repository {
     const now = iso(input.nowMs);
     await this.db
       .prepare(
-        `INSERT INTO submissions (id, participant_id, problem_id, problem_version, language, source_r2_key, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)`,
+        `INSERT INTO submissions (id, participant_id, problem_id, problem_version, language, source_r2_key, source_sha256, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'CREATED', ?, ?)`,
       )
       .bind(
         id,
@@ -411,6 +425,7 @@ export class D1Repository implements Repository {
         problem.activeVersion,
         input.language,
         input.sourceR2Key,
+        input.sourceSha256,
         now,
         now,
       )
@@ -559,6 +574,29 @@ export class D1Repository implements Repository {
     return this.findSubmissionById(id);
   }
 
+  async markDispatchAttempt(id: SubmissionId, nowMs: number): Promise<void> {
+    const now = iso(nowMs);
+    await this.db
+      .prepare(
+        "UPDATE submissions SET dispatch_attempts=dispatch_attempts+1, last_dispatch_at=?, updated_at=? WHERE id=?",
+      )
+      .bind(now, now, id)
+      .run();
+  }
+
+  async listDispatchableSubmissions(beforeMs: number, limit: number): Promise<SubmissionRecord[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM submissions
+         WHERE status IN ('CREATED','QUEUED','JUDGE_RETRY')
+           AND (last_dispatch_at IS NULL OR last_dispatch_at <= ?)
+         ORDER BY created_at ASC LIMIT ?`,
+      )
+      .bind(iso(beforeMs), Math.max(1, Math.min(limit, 1000)))
+      .all();
+    return results.map((row) => this.mapSubmission(row as Row));
+  }
+
   private mapSubmission(r: Row): SubmissionRecord {
     return {
       id: asSubmissionId(emptyString(r.id)),
@@ -567,10 +605,13 @@ export class D1Repository implements Repository {
       problemVersion: Number(r.problem_version),
       language: emptyString(r.language) as SubmissionLanguage,
       sourceR2Key: emptyString(r.source_r2_key),
+      sourceSha256: emptyString(r.source_sha256),
       status: r.status as SubmissionStatus,
       attemptCount: Number(r.attempt_count),
       executionToken: nullableString(r.execution_token),
       leaseUntilMs: parseMs(r.lease_until),
+      dispatchAttempts: Number(r.dispatch_attempts),
+      lastDispatchAtMs: parseMs(r.last_dispatch_at),
       compilerVersion: nullableString(r.compiler_version),
       compilerFlags: nullableString(r.compiler_flags),
       runnerImageVersion: nullableString(r.runner_image_version),

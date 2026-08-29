@@ -72,7 +72,9 @@ export async function bootstrapCloudflare(env: {
   if (!version) throw new Error("seed problem version missing");
   await db
     .prepare(
-      `INSERT INTO problem_versions (problem_id, version, language_policy, compiler_image_version, comparator_version, runner_image_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO problem_versions (problem_id, version, language_policy, compiler_image_version, comparator_version, runner_image_version,
+       time_limit_ms, memory_limit_kb, output_limit_bytes, compile_time_limit_ms, compile_output_limit_bytes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       version.problemId,
@@ -81,6 +83,11 @@ export async function bootstrapCloudflare(env: {
       version.compilerImageVersion,
       version.comparatorVersion,
       version.runnerImageVersion,
+      version.limits.timeLimitMs,
+      version.limits.memoryLimitKb,
+      version.limits.outputLimitBytes,
+      version.limits.compileTimeLimitMs,
+      version.limits.compileOutputLimitBytes,
       now,
     )
     .run();

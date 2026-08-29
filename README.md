@@ -40,6 +40,10 @@ never interpolated into a command. Native programs receive address-space plus
 RSS/cgroup limits. Managed runtimes use RSS/cgroup memory enforcement so large
 virtual reservations by V8 or Python are not mistaken for resident memory.
 
+Problem versions also snapshot all runtime and compilation limits. Changing a
+problem's defaults affects only later versions; an already queued submission
+always uses the limits attached to its recorded version.
+
 ## Local vs Cloudflare: the adapter boundary
 
 The MVP runs fully locally with no Cloudflare account. Cloudflare bindings
@@ -318,10 +322,24 @@ problems/{problemId}/{problemVersion}/benchmarks/001.out
 judge-artifacts/{submissionId}/{attempt}/compile.log   (optional)
 ```
 
+The API stores a SHA-256 digest with every submission source and every hidden
+test artifact. The consumer verifies those digests before invoking a compiler
+or interpreter. Missing or mismatched integrity metadata is an infrastructure
+failure, never participant-controlled execution.
+
 Problem data is versioned and immutable. Never overwrite files under an
 existing version; create a new version and rejudge explicitly. A
 submission records the problem version it was judged against, so
 historical judgments stay reproducible.
+
+## Durable Queue handoff
+
+D1 is the authoritative submission ledger. Because D1 and Cloudflare Queues do
+not share a transaction, a Queue send can fail after the `QUEUED` row commits.
+The API still returns the durable submission id, while a once-per-minute Cron
+Trigger scans `CREATED`, `QUEUED`, and `JUDGE_RETRY` rows whose last dispatch is
+at least 30 seconds old and sends them again. Conditional execution leases make
+duplicate messages harmless.
 
 ## Performance scoring
 

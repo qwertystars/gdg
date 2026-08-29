@@ -19,7 +19,7 @@
  * the submission was reclaimed by a newer attempt.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { SubmissionBenchmarkRecord, SubmissionTestResultRecord, TestCaseRecord } from "../domain/entities";
 import { isTerminalSubmissionStatus, type SubmissionStatus } from "../domain/enums";
 import type { SubmissionId } from "../domain/ids";
@@ -80,6 +80,14 @@ export function classifyTestResult(run: JudgeRun): SubmissionTestResultRecord["s
   return RUN_STATUS_TO_TEST_RESULT_STATUS[run.metrics.classification];
 }
 
+function assertSha256(label: string, content: string, expected: string | null): void {
+  if (expected === null || expected.length === 0) {
+    throw new JudgeInfraError(`${label} has no trusted SHA-256 metadata`);
+  }
+  const actual = createHash("sha256").update(content, "utf8").digest("hex");
+  if (actual !== expected) throw new JudgeInfraError(`${label} failed SHA-256 verification`);
+}
+
 export class JudgeConsumer {
   private readonly deps: JudgeConsumerDeps;
   private readonly maxJudgeRetries: number;
@@ -106,13 +114,6 @@ export class JudgeConsumer {
     });
     if (!claim.ok) return;
 
-    const problem = await repo.findProblemById(submission.problemId);
-    if (problem === null) throw new Error(`problem ${submission.problemId} missing for submission ${submissionId}`);
-
-    const allTests = await repo.listTestCases(submission.problemId, submission.problemVersion);
-    const correctness = allTests.filter((t) => t.kind === "CORRECTNESS").sort((a, b) => a.ordinal - b.ordinal);
-    const benchmarks = allTests.filter((t) => t.kind === "BENCHMARK").sort((a, b) => a.ordinal - b.ordinal);
-
     await repo.createJudgeAttempt({
       submissionId,
       attemptNumber: claim.attemptNumber,
@@ -120,27 +121,65 @@ export class JudgeConsumer {
       nowMs,
     });
 
-    const source = await this.deps.artifacts.read(submission.sourceR2Key);
-    const correctnessCases = await Promise.all(correctness.map((t) => this.loadTestCase(t)));
-    const benchmarkCases = await Promise.all(benchmarks.map((t) => this.loadTestCase(t)));
+    try {
+      const version = await repo.findProblemVersion(submission.problemId, submission.problemVersion);
+      if (version === null) throw new Error(`problem version missing for submission ${submissionId}`);
+      const allTests = await repo.listTestCases(submission.problemId, submission.problemVersion);
+      const correctness = allTests.filter((t) => t.kind === "CORRECTNESS").sort((a, b) => a.ordinal - b.ordinal);
+      const benchmarks = allTests.filter((t) => t.kind === "BENCHMARK").sort((a, b) => a.ordinal - b.ordinal);
+      const source = await this.deps.artifacts.read(submission.sourceR2Key);
+      assertSha256("submission source", source, submission.sourceSha256);
+      const correctnessCases = await Promise.all(correctness.map((t) => this.loadTestCase(t)));
+      const benchmarkCases = await Promise.all(benchmarks.map((t) => this.loadTestCase(t)));
 
-    const result = await this.deps.judge.judge({
-      language: submission.language,
-      source,
-      correctness: correctnessCases,
-      benchmarks: benchmarkCases,
-      limits: {
-        wallTimeMs: problem.limits.timeLimitMs,
-        cpuTimeMs: problem.limits.timeLimitMs,
-        memoryKb: problem.limits.memoryLimitKb,
-        outputBytes: problem.limits.outputLimitBytes,
-        maxProcesses: JUDGE_MAX_PROCESSES,
-      },
-      benchmarkRuns: BENCHMARK_RUNS,
-    });
+      const result = await this.deps.judge.judge({
+        language: submission.language,
+        source,
+        correctness: correctnessCases,
+        benchmarks: benchmarkCases,
+        limits: {
+          wallTimeMs: version.limits.timeLimitMs,
+          cpuTimeMs: version.limits.timeLimitMs,
+          memoryKb: version.limits.memoryLimitKb,
+          outputBytes: version.limits.outputLimitBytes,
+          maxProcesses: JUDGE_MAX_PROCESSES,
+        },
+        benchmarkRuns: BENCHMARK_RUNS,
+      });
 
-    await this.persistRuns(submissionId, correctness, benchmarks, result);
-    await this.commitResult(submissionId, executionToken, claim.attemptNumber, nowMs, result);
+      await this.persistRuns(submissionId, correctness, benchmarks, result);
+      await this.commitResult(submissionId, executionToken, claim.attemptNumber, nowMs, result);
+    } catch (error) {
+      const current = await repo.findSubmissionById(submissionId);
+      // commitResult already recorded intentional judge retries/terminal
+      // failures. Only convert unexpected post-claim failures here.
+      if (current?.status === "JUDGE_RETRY" || (current !== null && isTerminalSubmissionStatus(current.status))) {
+        throw error;
+      }
+      const completedAtMs = this.deps.nowMs?.() ?? Date.now();
+      const message = error instanceof Error ? error.message : String(error);
+      await repo.updateJudgeAttempt(submissionId, claim.attemptNumber, {
+        status: "FAILED_RETRYABLE",
+        infrastructureError: message.slice(0, 1024),
+        completedAtMs,
+      });
+      const retriesUsed = (await repo.listJudgeAttempts(submissionId)).filter(
+        (attempt) => attempt.status === "FAILED_RETRYABLE",
+      ).length;
+      if (retriesUsed <= this.maxJudgeRetries) {
+        await repo.setSubmissionStatus(submissionId, "JUDGE_RETRY", completedAtMs);
+        throw new JudgeInfraError(`judge preflight failed; scheduled retry ${retriesUsed}/${this.maxJudgeRetries}`);
+      }
+      const errorId = `judge_err_${randomUUID().replaceAll("-", "")}`;
+      await repo.submitResult({ submissionId, executionToken, status: "JUDGE_ERROR", errorId, nowMs: completedAtMs });
+      await repo.updateJudgeAttempt(submissionId, claim.attemptNumber, {
+        status: "FAILED_TERMINAL",
+        infrastructureError: `${message.slice(0, 900)}; retries exhausted`,
+        errorId,
+        completedAtMs,
+      });
+      throw new JudgeInfraError(`judge preflight failed; retries exhausted, submission JUDGE_ERROR`);
+    }
   }
 
   private async loadTestCase(testCase: TestCaseRecord): Promise<{ id: string; input: string; expected: string }> {
@@ -148,6 +187,8 @@ export class JudgeConsumer {
       this.deps.artifacts.read(testCase.inputR2Key),
       this.deps.artifacts.read(testCase.expectedR2Key),
     ]);
+    assertSha256(`test ${testCase.id} input`, input, testCase.inputSha256);
+    assertSha256(`test ${testCase.id} expected`, expected, testCase.expectedSha256);
     return { id: testCase.id, input, expected };
   }
 

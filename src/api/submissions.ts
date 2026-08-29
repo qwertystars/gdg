@@ -12,6 +12,7 @@
  * submission gets 404 so existence is never revealed.
  */
 
+import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { SubmissionRecord } from "../domain/entities";
@@ -179,17 +180,33 @@ export function submissionsRoutes(deps: SubmissionRouteDeps): Hono {
     // never queued. The submitted source is what the judge reads.
     const sourceKey = sourceR2KeyFor(submissionId, input.language);
     await deps.store.write(sourceKey, input.source);
+    const sourceSha256 = createHash("sha256").update(input.source, "utf8").digest("hex");
     const submission = await repo.createSubmission({
       participantId,
       problemId: problem.id,
       language: input.language,
       sourceR2Key: sourceKey,
+      sourceSha256,
       nowMs,
     });
     // The local memory repository assigns its own submission id; the queue
     // and response must use the STORED id so the consumer finds the row.
     await repo.setSubmissionStatus(submission.id, "QUEUED", nowMs);
-    await deps.queue.enqueue(submission.id);
+    await repo.markDispatchAttempt(submission.id, nowMs);
+    try {
+      await deps.queue.enqueue(submission.id);
+    } catch (error) {
+      // The durable D1 row is authoritative. The scheduled reconciler will
+      // retry this handoff; returning 202 avoids encouraging a duplicate
+      // participant submission when Queue is briefly unavailable.
+      console.error(
+        JSON.stringify({
+          event: "submission_dispatch_failed",
+          submissionId: submission.id,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
     return c.json({ submissionId: submission.id, status: "QUEUED" }, 202);
   });
 

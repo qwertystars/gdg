@@ -155,6 +155,7 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       compilerImageVersion: "gcc-12_python3_nodejs",
       comparatorVersion: "normalized-v1",
       runnerImageVersion: "judge-runner-v1",
+      limits: { ...problem.limits },
       nowMs,
     });
     await repo.createAuditLog({
@@ -311,7 +312,18 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       detailJson: JSON.stringify({ fromStatus: submission.status, problemId: submission.problemId }),
       nowMs,
     });
-    await deps.queue.enqueue(submission.id);
+    await repo.markDispatchAttempt(submission.id, nowMs);
+    try {
+      await deps.queue.enqueue(submission.id);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "rejudge_dispatch_failed",
+          submissionId: submission.id,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
     return c.json({ submissionId: submission.id, status: "QUEUED" }, 202);
   });
 

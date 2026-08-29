@@ -19,9 +19,16 @@
   // this file on `wrangler deploy` and `wrangler dev`.
 
   "name": "gdg-remote-runtime",
+  "account_id": "ee4c08f37c3a62fedc87fbd1b8b96ff4",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-28",
   "compatibility_flags": ["nodejs_compat"],
+
+  "triggers": {
+    // Repairs the non-transactional D1 -> Queue handoff. Conditional judge
+    // leases make duplicate deliveries harmless.
+    "crons": ["* * * * *"]
+  },
 
   // ----------------------------- D1 ------------------------------------
   // Single database. The schema lives in migrations/ and is applied with
