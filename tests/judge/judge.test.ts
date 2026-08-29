@@ -7,7 +7,7 @@ import {
   scoreBenchmarks,
   serializePublicResult,
 } from "../../src/judge";
-import { LocalProcessExecutionAdapter } from "../../src/judge/local-process";
+import { LocalCpp17Compiler, LocalProcessExecutionAdapter } from "../../src/judge/local-process";
 import type { ProcessExecutionAdapter } from "../../src/judge/types";
 
 const limits: JudgeLimits = {
@@ -184,4 +184,23 @@ test("medianInteger returns the integer middle value and benchmark scores sum me
       { testId: "b", cpuTimesNs: [20], medianCpuTimeNs: 20 },
     ]),
   ).toBe(30);
+});
+
+test("participant-controlled compiler diagnostics are supervisor-bounded", async () => {
+  const root = (await Bun.$`mktemp -d`.text()).trim();
+  tempRoots.push(root);
+  const compiler = new LocalCpp17Compiler();
+  const source = `${Array.from({ length: 2000 }, (_, index) => `#warning participant_${index}`).join("\n")}\nint main(){}`;
+  const result = await compiler.compile(source, `${root}/build`, "cpp17", {
+    wallTimeMs: 5000,
+    memoryKb: 512 * 1024,
+    outputBytes: 1024,
+    maxProcesses: 16,
+  });
+
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(new TextEncoder().encode(result.output).byteLength).toBeLessThanOrEqual(1024);
+    expect(result.output).toContain("compile OUTPUT_LIMIT_EXCEEDED");
+  }
 });

@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { SubmissionLanguage } from "../domain/enums";
 import { languageDefinition } from "./languages";
 import type {
+  CompileLimits,
   CompilerAdapter,
   ProcessExecutionAdapter,
   ProcessExecutionResult,
@@ -11,6 +12,13 @@ import type {
   SandboxAdapter,
   SandboxSession,
 } from "./types";
+
+const DEFAULT_COMPILE_LIMITS: CompileLimits = {
+  wallTimeMs: 10_000,
+  memoryKb: 524_288,
+  outputBytes: 262_144,
+  maxProcesses: 32,
+};
 
 // Lazy: resolved on first use. `import.meta.dir` is undefined under workerd
 // (Cloudflare runtime); this module only runs when the LOCAL judge executes
@@ -62,23 +70,98 @@ function command(
   });
 }
 
+const runnerBuilds = new Map<string, Promise<string>>();
+
+function ensureRunner(workspace: string): Promise<string> {
+  const existing = runnerBuilds.get(workspace);
+  if (existing) return existing;
+  const build = (async () => {
+    await mkdir(workspace, { recursive: true });
+    const path = join(workspace, "judge-runner");
+    const result = await command(
+      "g++",
+      ["-std=c++17", "-O2", "-pipe", runnerSourcePath(), "-o", path],
+      workspace,
+      30_000,
+      256 * 1024,
+    );
+    if (result.code !== 0 || result.signal) throw new Error(`could not build judge-runner: ${result.output}`);
+    return path;
+  })();
+  runnerBuilds.set(workspace, build);
+  return build;
+}
+
 export class LocalCpp17Compiler implements CompilerAdapter {
   async compile(
     source: string,
     workspace: string,
     language: SubmissionLanguage = "cpp17",
+    limits: CompileLimits = DEFAULT_COMPILE_LIMITS,
   ): Promise<
     | { ok: true; binaryPath: string; args: string[]; memoryAccounting: "address-space" | "rss" }
     | { ok: false; output: string }
   > {
     await mkdir(workspace, { recursive: true });
+    // The trusted runner drops to nobody when invoked as root. Only this
+    // disposable per-submission directory is writable by the compiler.
+    await chmod(workspace, 0o777);
     const definition = languageDefinition(language);
     const sourcePath = join(workspace, definition.sourceFile);
     const binaryPath = join(workspace, "submission");
     await Bun.write(sourcePath, source);
     const compile = definition.compile(sourcePath, binaryPath);
-    const result = await command(compile.command, compile.args, workspace, 10_000, 256 * 1024);
-    if (result.code !== 0 || result.signal) return { ok: false, output: result.output };
+    const runner = await ensureRunner(dirname(workspace));
+    const inputPath = join(workspace, "compile.stdin");
+    const stdoutPath = join(workspace, "compile.stdout");
+    const stderrPath = join(workspace, "compile.stderr");
+    const metricsPath = join(workspace, "compile.metrics.json");
+    await Bun.write(inputPath, "");
+    const child = spawn(
+      runner,
+      [
+        "--binary",
+        Bun.which(compile.command) ?? compile.command,
+        ...compile.args.flatMap((arg) => ["--arg", arg]),
+        "--memory-accounting",
+        definition.memoryAccounting,
+        "--input",
+        inputPath,
+        "--stdout",
+        stdoutPath,
+        "--stderr",
+        stderrPath,
+        "--metrics",
+        metricsPath,
+        "--wall-ms",
+        String(limits.wallTimeMs),
+        "--cpu-ms",
+        String(limits.wallTimeMs),
+        "--memory-kb",
+        String(limits.memoryKb),
+        "--output-bytes",
+        String(limits.outputBytes),
+        "--max-processes",
+        String(limits.maxProcesses),
+      ],
+      { cwd: workspace, detached: true, stdio: "ignore" },
+    );
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", () => resolve());
+    });
+    const metrics = JSON.parse(await readFile(metricsPath, "utf8")) as {
+      exitCode: number | null;
+      classification: string;
+    };
+    const output = `${await readBounded(stdoutPath, limits.outputBytes)}${await readBounded(
+      stderrPath,
+      limits.outputBytes,
+    )}`.slice(0, limits.outputBytes);
+    if (metrics.classification !== "NORMAL" || metrics.exitCode !== 0) {
+      const suffix = metrics.classification === "NORMAL" ? "" : `\n[compile ${metrics.classification}]`;
+      return { ok: false, output: `${output.slice(0, Math.max(0, limits.outputBytes - suffix.length))}${suffix}` };
+    }
     const execution = definition.execute(sourcePath, binaryPath);
     return {
       ok: true,
@@ -105,19 +188,10 @@ export class LocalProcessExecutionAdapter implements ProcessExecutionAdapter {
 
   private async ensureRunner(): Promise<string> {
     if (this.runnerPath) return this.runnerPath;
-    this.runnerPromise ??= (async () => {
-      const path = join(this.workspace, "judge-runner");
-      const result = await command(
-        "g++",
-        ["-std=c++17", "-O2", "-pipe", runnerSourcePath(), "-o", path],
-        this.workspace,
-        30_000,
-        256 * 1024,
-      );
-      if (result.code !== 0 || result.signal) throw new Error(`could not build judge-runner: ${result.output}`);
+    this.runnerPromise ??= ensureRunner(this.workspace).then((path) => {
       this.runnerPath = path;
       return path;
-    })();
+    });
     return this.runnerPromise;
   }
 

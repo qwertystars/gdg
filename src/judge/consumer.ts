@@ -144,6 +144,12 @@ export class JudgeConsumer {
           outputBytes: version.limits.outputLimitBytes,
           maxProcesses: JUDGE_MAX_PROCESSES,
         },
+        compileLimits: {
+          wallTimeMs: version.limits.compileTimeLimitMs,
+          memoryKb: Math.max(version.limits.memoryLimitKb, 524_288),
+          outputBytes: version.limits.compileOutputLimitBytes,
+          maxProcesses: 32,
+        },
         benchmarkRuns: BENCHMARK_RUNS,
       });
 

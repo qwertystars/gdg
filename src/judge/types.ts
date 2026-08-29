@@ -23,6 +23,13 @@ export interface JudgeLimits {
   maxProcesses: number;
 }
 
+export interface CompileLimits {
+  wallTimeMs: number;
+  memoryKb: number;
+  outputBytes: number;
+  maxProcesses: number;
+}
+
 export interface JudgeTestCase {
   id: string;
   input: string;
@@ -82,6 +89,7 @@ export interface JudgeRequest {
   correctness: JudgeTestCase[];
   benchmarks?: JudgeTestCase[];
   limits: JudgeLimits;
+  compileLimits?: CompileLimits;
   benchmarkRuns?: number;
 }
 
@@ -130,6 +138,7 @@ export interface CompilerAdapter {
     source: string,
     workspace: string,
     language?: import("../domain/enums").SubmissionLanguage,
+    limits?: CompileLimits,
   ): Promise<
     | { ok: true; binaryPath: string; args: string[]; memoryAccounting: "address-space" | "rss" }
     | { ok: false; output: string }

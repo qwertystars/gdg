@@ -44,6 +44,11 @@ Problem versions also snapshot all runtime and compilation limits. Changing a
 problem's defaults affects only later versions; an already queued submission
 always uses the limits attached to its recorded version.
 
+Both compile/check and execution stages run beneath the trusted native
+supervisor. Compiler processes receive a minimal environment, dropped
+privileges, a disposable writable build directory, and independent CPU,
+wall-time, memory, process, descriptor, and output caps.
+
 ## Local vs Cloudflare: the adapter boundary
 
 The MVP runs fully locally with no Cloudflare account. Cloudflare bindings

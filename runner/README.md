@@ -22,3 +22,9 @@ limits, records trusted metrics, and kills the complete group before returning.
 Native programs also receive an address-space limit. Managed runtimes use
 cgroup/aggregate-RSS memory accounting because their virtual address-space
 reservation is not equivalent to resident memory.
+
+Compilation and syntax checks also run under `judge-runner`, with their own
+immutable wall-time, CPU, memory, process, file-descriptor, and diagnostic
+output limits. The compiler receives the same minimal environment and dropped
+privileges as participant execution; only its disposable build directory is
+writable.

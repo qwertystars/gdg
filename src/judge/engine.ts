@@ -72,7 +72,12 @@ export class LocalCpp17Judge {
     let compilerOutput: string | undefined;
     try {
       sandbox = await sandboxAdapter.create(`local-${Date.now()}`, root);
-      const compiled = await this.compiler.compile(request.source, join(root, "build"), request.language ?? "cpp17");
+      const compiled = await this.compiler.compile(
+        request.source,
+        join(root, "build"),
+        request.language ?? "cpp17",
+        request.compileLimits,
+      );
       if (!compiled.ok) {
         status = "COMPILE_ERROR";
         compilerOutput = compiled.output;
