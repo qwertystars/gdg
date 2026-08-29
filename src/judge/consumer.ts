@@ -77,6 +77,7 @@ const RUN_STATUS_TO_TEST_RESULT_STATUS: Readonly<
 };
 
 export function classifyTestResult(run: JudgeRun): SubmissionTestResultRecord["status"] {
+  if (run.metrics.classification === "NORMAL" && !run.passed) return "WRONG_ANSWER";
   return RUN_STATUS_TO_TEST_RESULT_STATUS[run.metrics.classification];
 }
 

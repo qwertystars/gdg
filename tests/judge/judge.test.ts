@@ -7,6 +7,7 @@ import {
   scoreBenchmarks,
   serializePublicResult,
 } from "../../src/judge";
+import { classifyTestResult } from "../../src/judge/consumer";
 import { LocalCpp17Compiler, LocalProcessExecutionAdapter } from "../../src/judge/local-process";
 import type { ProcessExecutionAdapter } from "../../src/judge/types";
 
@@ -192,6 +193,29 @@ test("medianInteger returns the integer middle value and benchmark scores sum me
       { testId: "b", cpuTimesNs: [20], medianCpuTimeNs: 20 },
     ]),
   ).toBe(30);
+});
+
+test("a normal exit with mismatched output persists as WRONG_ANSWER", () => {
+  expect(
+    classifyTestResult({
+      testId: "t",
+      stdout: "wrong\n",
+      stderr: "",
+      passed: false,
+      metrics: {
+        exitCode: 0,
+        signal: null,
+        wallTimeNs: 1,
+        userCpuTimeNs: 1,
+        systemCpuTimeNs: 0,
+        maxRssKb: 1,
+        timedOut: false,
+        memoryExceeded: false,
+        outputExceeded: false,
+        classification: "NORMAL",
+      },
+    }),
+  ).toBe("WRONG_ANSWER");
 });
 
 test("participant-controlled compiler diagnostics are supervisor-bounded", async () => {

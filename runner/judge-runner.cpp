@@ -299,7 +299,8 @@ int main(int argc, char** argv) {
   // hard ceiling and may surface as bad_alloc/exit(1). Peak VmSize proves the
   // process exhausted its address-space allowance; ordinary low-memory
   // runtime errors remain RUNTIME_ERROR.
-  if (o.address_space_limit && !cgroup.active() && abnormal_exit && peak_virtual_kb * 100 >= o.memory_kb * 95) {
+  if (o.address_space_limit && !cgroup.active() && abnormal_exit &&
+      (peak_virtual_kb * 100 >= o.memory_kb * 95 || peak_rss * 100 >= o.memory_kb * 95)) {
     memory_exceeded = true;
   }
   kill_group(child, &cgroup); // also remove detached descendants after the main process exits
