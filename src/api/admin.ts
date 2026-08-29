@@ -251,9 +251,8 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       throw new ApiError(409, "cannot activate a version with no test cases");
     }
     const nowMs = deps.nowMs?.() ?? Date.now();
-    problem.lifecycleState = "ACTIVE";
-    problem.activeVersion = version;
-    problem.updatedAtMs = nowMs;
+    const activated = await repo.activateProblemVersion(problem.id, version, nowMs);
+    if (activated === null) throw new ApiError(409, "problem version could not be activated");
     await repo.createAuditLog({
       id: newAuditLogId(),
       actorId: participantIdOf(auth),
@@ -264,7 +263,11 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       detailJson: JSON.stringify({ version }),
       nowMs,
     });
-    return c.json({ id: problem.id, lifecycleState: "ACTIVE", activeVersion: version });
+    return c.json({
+      id: activated.id,
+      lifecycleState: activated.lifecycleState,
+      activeVersion: activated.activeVersion,
+    });
   });
 
   app.post("/problems/:problemId/close", async (c) => {

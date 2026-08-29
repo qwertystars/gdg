@@ -363,6 +363,20 @@ export class D1Repository implements Repository {
     return created;
   }
 
+  async activateProblemVersion(problemId: ProblemId, version: number, nowMs: number): Promise<ProblemRecord | null> {
+    const result = await this.db
+      .prepare(
+        `UPDATE problems SET lifecycle_state='ACTIVE', active_version=?, updated_at=?
+         WHERE id=? AND EXISTS (
+           SELECT 1 FROM problem_versions WHERE problem_id=? AND version=?
+         )`,
+      )
+      .bind(version, iso(nowMs), problemId, problemId, version)
+      .run();
+    if (result.meta.changes !== 1) return null;
+    return this.findProblemById(problemId);
+  }
+
   async createTestCase(input: {
     id: TestCaseId;
     problemId: ProblemId;

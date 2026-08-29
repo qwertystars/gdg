@@ -126,7 +126,6 @@ async function poll(item: (typeof submitted)[number]) {
     });
     if (!response.ok) throw new Error(`poll ${item.submissionId} failed: HTTP ${response.status}`);
     if (typeof body.status === "string" && terminal.has(body.status)) {
-      const completedAtMs = typeof body.completedAtMs === "number" ? body.completedAtMs : Date.now();
       return {
         scenario: item.scenario.name,
         language: item.scenario.language,
@@ -135,7 +134,9 @@ async function poll(item: (typeof submitted)[number]) {
         actualStatus: body.status,
         passed: body.status === item.scenario.expectedStatus,
         submitLatencyMs: Math.round(item.submitLatencyMs * 100) / 100,
-        queueAndJudgeMs: completedAtMs - item.submittedAtMs,
+        // Client-observed duration avoids negative values when Worker and
+        // client clocks differ. Server timestamps remain response metadata.
+        queueAndJudgeMs: Date.now() - item.submittedAtMs,
         polls,
         performanceScoreNs: typeof body.performanceScoreNs === "number" ? body.performanceScoreNs : null,
         peakMemoryKb: typeof body.peakMemoryKb === "number" ? body.peakMemoryKb : null,

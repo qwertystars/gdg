@@ -225,6 +225,15 @@ export class MemoryRepository implements Repository {
     return record;
   }
 
+  async activateProblemVersion(problemId: ProblemId, version: number, nowMs: number): Promise<ProblemRecord | null> {
+    const problem = this.problems.get(problemId);
+    if (!problem || !this.problemVersions.has(versionKey(problemId, version))) return null;
+    problem.lifecycleState = "ACTIVE";
+    problem.activeVersion = version;
+    problem.updatedAtMs = nowMs;
+    return problem;
+  }
+
   async createTestCase(input: {
     id: TestCaseId;
     problemId: ProblemId;

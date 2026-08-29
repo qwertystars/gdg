@@ -109,6 +109,8 @@ export interface Repository {
     limits: ProblemRecord["limits"];
     nowMs: number;
   }): Promise<ProblemVersionRecord>;
+  /** Atomically make an existing, tested version active. */
+  activateProblemVersion(problemId: ProblemId, version: number, nowMs: number): Promise<ProblemRecord | null>;
   /** Create a test case row and persist its artifacts via the store. */
   createTestCase(input: {
     id: TestCaseId;
