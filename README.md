@@ -53,8 +53,8 @@ wall-time, memory, process, descriptor, and output caps.
 
 The system runs fully locally with no Cloudflare account. Production bindings
 (D1, R2, Queues, Sandbox/Containers) are configured in `wrangler.jsonc`; the
-TypeScript code depends on narrow adapter interfaces so the local
-implementations behind them. Deploying to Cloudflare swaps the adapters
+TypeScript code depends on narrow adapter interfaces so local implementations
+can sit behind them. Deploying to Cloudflare swaps the adapters
 without changing domain behavior.
 
 | Concern | Local MVP | Cloudflare |
@@ -87,20 +87,27 @@ section 59).
 | Method | Route | Role | Purpose |
 |---|---|---|---|
 | GET | `/api/v1/health` | none | Liveness; never runs participant code |
-| GET | `/api/v1/problems` | any | List active problems |
-| GET | `/api/v1/problems/:problemId` | any | Problem details (no hidden tests) |
+| GET | `/api/v1/problems` | authenticated | List problems |
+| GET | `/api/v1/problems/:problemId` | authenticated | Problem details (no hidden tests) |
 | POST | `/api/v1/submissions` | PARTICIPANT, ADMIN | Submit supported source code, returns `202` + `submissionId` |
 | GET | `/api/v1/submissions` | PARTICIPANT | Own submissions only (filtered by token identity) |
 | GET | `/api/v1/submissions/:submissionId` | PARTICIPANT | Own submission result |
-| GET | `/api/v1/leaderboard` | any | Per-problem leaderboard |
-| GET | `/api/v1/leaderboard/:problemId` | any | Single-problem leaderboard |
+| GET | `/api/v1/submissions/:submissionId/source` | owner, ADMIN | Read submitted source |
+| GET | `/api/v1/submissions/:submissionId/test-results` | owner, ADMIN | Per-test metrics and benchmark runs |
+| GET | `/api/v1/leaderboard` | authenticated | All per-problem, per-language rankings |
+| GET | `/api/v1/leaderboard/:problemId` | authenticated | One problem's per-language rankings |
 | POST | `/api/v1/admin/problems` | ADMIN | Create problem (DRAFT) |
 | PATCH | `/api/v1/admin/problems/:problemId` | ADMIN | Edit limits/metadata |
 | POST | `/api/v1/admin/problems/:problemId/versions` | ADMIN | New problem version |
 | POST | `/api/v1/admin/problems/:problemId/versions/:version/tests` | ADMIN | Upload hidden tests |
 | POST | `/api/v1/admin/problems/:problemId/activate/:version` | ADMIN | Activate a frozen version |
+| POST | `/api/v1/admin/problems/:problemId/close` | ADMIN | Close an active problem |
 | POST | `/api/v1/admin/submissions/:submissionId/rejudge` | ADMIN | Rejudge with audit trail |
+| GET | `/api/v1/admin/audit?subjectType=...&subjectId=...` | ADMIN | Read an object's audit history |
 | GET | `/api/v1/admin/judge-errors` | ADMIN | Infrastructure failure inspection |
+| GET | `/api/v1/admin/judge-errors/:submissionId` | ADMIN | Attempt-level infrastructure details |
+| POST | `/api/v1/admin/tokens` | ADMIN | Issue a token; plaintext returned once |
+| POST | `/api/v1/admin/tokens/:tokenId/revoke` | ADMIN | Revoke a token immediately |
 
 Submission body:
 
@@ -116,6 +123,142 @@ The client never sends limits, expected output, or a score. Those are
 server-owned. Validation order is auth, authorization, problem active,
 language supported, source non-empty and under `SOURCE_LIMIT_BYTES`
 (128 KiB), then rate limit. A rejected rate-limited request is not stored.
+
+### Authentication and access control
+
+Every route except `/api/v1/health` requires this header:
+
+```http
+Authorization: Bearer <TOKEN>
+```
+
+The API hashes the presented token with SHA-256 and looks up the hash in D1.
+Plaintext tokens are never stored. Missing, malformed, unknown, or revoked
+tokens return `401`. A suspended participant returns `403`; a participant
+calling an admin route returns `403`. When a participant requests another
+participant's submission, source, or test results, the API deliberately
+returns `404` instead of revealing that the object exists.
+
+There is no browser login, password, OAuth, or self-registration flow. An
+organizer provisions participants and gives each person their bearer token over
+a separate trusted channel. Treat that token like a password and use it only
+over HTTPS.
+
+> **Production bootstrap warning:** `src/domain/seed.ts` contains deterministic
+> development tokens, and `bootstrapCloudflare()` inserts them into an empty
+> database. They make local setup convenient but are public credentials and
+> must not be trusted for a real event. Before participant access, revoke both
+> `token_seed_admin` and `token_seed_participant`, provision a high-entropy
+> organizer token through a controlled bootstrap, and never place its plaintext
+> in source control, shell history, logs, benchmark reports, or frontend code.
+
+Participants must exist before a token can be issued. Until a participant
+import endpoint is added, organizers can insert an event roster into D1 using
+parameterized SQL or a reviewed import migration. Required columns are `id`,
+`display_name`, `status`, and `created_at`; use unique opaque IDs and `ACTIVE`
+status. Do not construct SQL by concatenating untrusted CSV fields.
+
+With an existing participant and a securely bootstrapped admin token, issue a
+token as follows. The `token` value appears only in this response:
+
+```bash
+export API_BASE='https://gdg-remote-runtime.srijan-guchhait.workers.dev'
+export ADMIN_TOKEN='<secure-admin-token>'
+
+curl --fail-with-body --request POST "$API_BASE/api/v1/admin/tokens" \
+  --header "Authorization: Bearer $ADMIN_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"participantId":"participant_123","role":"PARTICIPANT"}'
+```
+
+Store the returned `tokenId` so the credential can later be revoked. Deliver
+the returned plaintext `token` once to that participant. A participant can then
+verify access without creating data:
+
+```bash
+export PARTICIPANT_TOKEN='<participant-token>'
+curl --fail-with-body \
+  --header "Authorization: Bearer $PARTICIPANT_TOKEN" \
+  "$API_BASE/api/v1/problems"
+```
+
+Revoke a lost or compromised credential immediately:
+
+```bash
+curl --fail-with-body --request POST \
+  --header "Authorization: Bearer $ADMIN_TOKEN" \
+  "$API_BASE/api/v1/admin/tokens/<token-id>/revoke"
+```
+
+### Participant API walkthrough
+
+List problems, inspect one, submit code, and poll the durable result:
+
+```bash
+curl --fail-with-body -H "Authorization: Bearer $PARTICIPANT_TOKEN" \
+  "$API_BASE/api/v1/problems"
+
+curl --fail-with-body -H "Authorization: Bearer $PARTICIPANT_TOKEN" \
+  "$API_BASE/api/v1/problems/problem_seed_two_sum"
+
+curl --fail-with-body --request POST "$API_BASE/api/v1/submissions" \
+  --header "Authorization: Bearer $PARTICIPANT_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "problemId":"problem_seed_two_sum",
+    "language":"cpp17",
+    "source":"#include <iostream>\nint main(){long long x;std::cin>>x;std::cout<<x*2<<\"\\n\";}"
+  }'
+
+curl --fail-with-body -H "Authorization: Bearer $PARTICIPANT_TOKEN" \
+  "$API_BASE/api/v1/submissions/<submission-id>"
+```
+
+Creation returns `202 {"submissionId":"...","status":"QUEUED"}`. Poll with
+bounded exponential backoff until the status becomes terminal; do not submit
+the same source again merely because it remains queued. `GET /submissions`
+returns the caller's latest submissions, `/source` returns the original source,
+and `/test-results` returns trusted per-test CPU, wall, memory, exit, signal,
+and benchmark-run measurements. Hidden inputs and expected outputs are never
+returned. Use `/leaderboard` or `/leaderboard/:problemId` for rankings.
+
+### Organizer problem workflow
+
+The lifecycle is `DRAFT -> ACTIVE -> CLOSED`:
+
+1. `POST /api/v1/admin/problems` with `slug`, `title`, and `limits`.
+2. `PATCH /api/v1/admin/problems/:problemId` while preparing metadata/defaults.
+3. `POST /api/v1/admin/problems/:problemId/versions` with a numeric `version`
+   and optional `languages` array (`cpp17`, `c17`, `python3`, `javascript`).
+4. `POST /api/v1/admin/problems/:problemId/versions/:version/tests` with a
+   `tests` array. Each entry contains `kind` (`CORRECTNESS` or `BENCHMARK`),
+   unique numeric `ordinal`, `input`, `expected`, optional `comparator`, and
+   optional `weight`.
+5. `POST /api/v1/admin/problems/:problemId/activate/:version`. Activation is
+   rejected when the version has no tests. Once active, that version's tests
+   are frozen; changes require a new version.
+6. Monitor `/admin/judge-errors`, use `/admin/audit` for mutations, and use the
+   explicit rejudge endpoint after an infrastructure or judge correction.
+7. `POST /api/v1/admin/problems/:problemId/close` to reject new submissions.
+
+Limits and the language policy are snapshotted into each version. Editing
+problem defaults does not silently alter already queued or historical work.
+
+### HTTP and verdict semantics
+
+| Response | Meaning |
+|---|---|
+| `200` | Successful read or mutation |
+| `201` | Problem, version, tests, or token created |
+| `202` | Submission/rejudge durably queued; judgment is asynchronous |
+| `400` | Missing or invalid request fields |
+| `401` | Missing, malformed, unknown, or revoked token |
+| `403` | Wrong role or suspended participant |
+| `404` | Object unavailable, including ownership-hiding responses |
+| `409` | Lifecycle/version conflict, such as changing frozen tests |
+| `422` | Unsupported language or invalid source size |
+| `429` | More than five submissions in the participant's 10-second window |
+| `500` | Unexpected API/infrastructure error; use correlation logs |
 
 ## Submission lifecycle and statuses
 
@@ -286,7 +429,7 @@ input", with source files for every participant-controlled outcome:
 | `sources/wrong-answer.cpp` | `WRONG_ANSWER` |
 | `sources/infinite-loop.cpp` | `TIME_LIMIT_EXCEEDED` |
 | `sources/output-flood.cpp` | `OUTPUT_LIMIT_EXCEEDED` |
-| `sources/memory-overflow.cpp` | `RUNTIME_ERROR` (see note below) |
+| `sources/memory-overflow.cpp` | `MEMORY_LIMIT_EXCEEDED` |
 
 ## Operational scripts
 
@@ -394,7 +537,7 @@ Deployed and proven end-to-end on the Cloudflare Workers **Paid** plan
 (Containers entitlement) at `gdg-remote-runtime.srijan-guchhait.workers.dev`:
 
 - `GET /api/v1/health` → `200 {"status":"ok"}`; seeded `problem_seed_two_sum` lists.
-- `POST /api/v1/submissions` (bearer `rr_dev_participant_token_0001`, `accepted.cpp`)
+- `POST /api/v1/submissions` (authenticated participant, `accepted.cpp`)
   → `202 QUEUED` → poll → **`ACCEPTED`** with `performanceScoreNs=1550000`,
   `peakMemoryKb=5680`, `passedTests=3/3`.
 - `compile-error.cpp` → **`COMPILE_ERROR`** (bounded g++ diagnostics, no leak).
@@ -420,6 +563,52 @@ bunx wrangler deploy   # builds + pushes the container image, deploys worker
 > (app container never created; only the `proxy-everything` sidecar). Real
 > Sandbox judging requires the paid plane's Containers entitlement — see
 > `.omo/notes/ulw-cloudflare-runtime.md`.
+
+## Edge cases and failure handling
+
+| Edge case | Handling |
+|---|---|
+| Empty, oversized, or unsupported source | Rejected before R2/D1 submission creation; fixed 128 KiB byte limit |
+| Source containing shell syntax | Stored as bytes and written to a fixed filename; never interpolated into a command |
+| Compile error or compiler output flood | Compilation uses the same supervisor limits; only bounded diagnostics are returned |
+| Infinite loop or sleeping process | Independent CPU and wall clocks; the whole process group is killed |
+| Fork bomb or escaped child | PID/process cap, process group, subreaper, descendant accounting, and group cleanup |
+| Memory leak or allocation exhaustion | Aggregate cgroup RSS where available; trusted RSS/address-space fallback otherwise; classified as MLE |
+| stdout/stderr flood | Supervisor stops reading at the cap, kills the process group, and returns OLE without creating a core dump |
+| Crash, signal, non-zero exit | Classified as runtime error unless stronger trusted evidence establishes TLE, MLE, or OLE |
+| Wrong answer | Normalized trusted-side comparison; expected output is never copied into participant-visible storage |
+| Nondeterministic timing | Correctness separated from scoring; median of five CPU-time runs; wall/cold-start/queue time excluded |
+| Worker preemption | D1 lease expires and a later delivery can reclaim the submission |
+| Duplicate Queue delivery | Conditional claim plus execution token makes processing idempotent |
+| Queue send fails after D1 commit | Cron reconciliation redispatches durable queued rows |
+| Old worker finishes after retry | Stale execution token cannot commit over the newer attempt |
+| Sandbox/R2/D1 transient failure | Bounded retries; terminal `JUDGE_ERROR` plus DLQ and admin diagnostics after exhaustion |
+| Participant reads another submission | Returns `404`, avoiding an ownership/existence side channel |
+| Revoked token or suspended account | Revoked token returns `401`; suspended participant returns `403` |
+| Hidden-test artifact modified or missing | Stored SHA-256 mismatch becomes infrastructure failure; untrusted bytes are not executed as valid tests |
+| Active tests edited during an event | Active problem version is frozen; organizers must create and explicitly activate a new version |
+| Cross-language score comparison | Separate rank sequence per language because runtime families are not directly comparable |
+
+## Problems encountered and mitigations
+
+| Problem encountered | Root cause | Mitigation and verification |
+|---|---|---|
+| Desktop crash notifications from `/tmp/.../build/submission` | Adversarial output-limit tests terminated participant binaries in a way systemd-coredump reported | Core dumps are disabled in the trusted runner; output flooding remains OLE and cleanup tests verify no lingering processes |
+| Node/V8 crashed under the native memory limit | V8 reserves a large virtual address range, so `RLIMIT_AS` is not a valid proxy for resident memory | Managed runtimes use RSS/cgroup enforcement; Node and Python adversarial tests run without host crash notifications |
+| Native allocation exhaustion appeared as runtime error | The allocator could fail just below the configured threshold without an explicit cgroup OOM event | Cgroup mode avoids a conflicting address-space limit; fallback classification combines peak RSS, virtual-size evidence, and abnormal exit near the limit |
+| A normal exit with incorrect output could be persisted as PASS | Resource classification and correctness classification were insufficiently separated | The consumer maps `NORMAL + !passed` to `WRONG_ANSWER`; regression and remote wrong-answer cases pass |
+| Initial deployed problem rejected new languages | The old immutable problem version allowed only the original language policy | Create and activate a new version with all four language IDs; submissions remain pinned to their recorded version |
+| D1 activation changed only an in-memory object | Mutation semantics that worked in the memory repository did not persist in D1 | Added `activateProblemVersion()` to the repository contract and D1 implementation; verified through the deployed admin API |
+| Queue handoff cannot be atomic with a D1 transaction | D1 and Cloudflare Queues are separate services | Persist first, tolerate send failure, and reconcile undispatched rows once per minute; duplicate delivery is safe |
+| Preempted workers could otherwise overwrite newer results | At-least-once delivery permits overlapping attempts after lease expiry | Conditional lease claims and per-attempt execution tokens gate every terminal commit |
+| Raw execution latency was noisy on cloud containers | Cold starts, Queue delay, and shared-host scheduling are outside participant control | Score only trusted CPU time inside the supervised process; use repeated runs and median; report end-to-end latency separately |
+| Local Cloudflare Containers did not start the application container | Current upstream local Containers limitation | Use local native-runner tests for development and the paid Cloudflare plane for final integration/disruption benchmarks |
+| Statically known bootstrap credentials are convenient but unsafe | Deterministic seed data was designed for reproducible local development | Explicitly document the risk, revoke seed tokens before an event, and use one-time high-entropy token issuance; a production-only bootstrap remains a deployment prerequisite |
+
+The final local suite passed 140 tests, and the deployed correctness/disruption
+matrix passed 9/9 scenarios. Exact deployment IDs, container digest, timings,
+and memory results are in `BENCHMARKS.md`; the requirement-by-requirement audit
+is in `RELEASE-VALIDATION.md`.
 
 ## Known limits
 
