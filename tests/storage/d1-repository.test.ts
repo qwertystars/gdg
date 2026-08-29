@@ -1,7 +1,7 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
-import { asSubmissionId, type SubmissionId } from "../../src/domain/ids";
+import { asParticipantId, asProblemId, asSubmissionId, type SubmissionId } from "../../src/domain/ids";
 import { type D1Like, D1Repository } from "../../src/storage/d1-repository";
 
 const NOW = 1_700_000_000_000;
@@ -164,5 +164,28 @@ describe("D1Repository submitResult", () => {
     const stored = (await repo.findSubmissionById(id))!;
     expect(stored.status).toBe("JUDGE_ERROR");
     expect(stored.errorId).toBe("judge_err_abc123");
+  });
+});
+
+describe("D1Repository security-sensitive mutations", () => {
+  test("problem updates and ACTIVE -> CLOSED transitions persist in D1", async () => {
+    const problemId = asProblemId("problem_seed_two_sum");
+    const updated = await repo.updateProblem(problemId, { title: "Updated", timeLimitMs: 1234 }, NOW + 1);
+    expect(updated?.title).toBe("Updated");
+    expect(updated?.limits.timeLimitMs).toBe(1234);
+
+    const closed = await repo.closeProblem(problemId, NOW + 2);
+    expect(closed?.lifecycleState).toBe("CLOSED");
+    expect((await repo.findProblemById(problemId))?.lifecycleState).toBe("CLOSED");
+    expect(await repo.closeProblem(problemId, NOW + 3)).toBeNull();
+  });
+
+  test("submission rate-limit increments are atomic at the D1 statement boundary", async () => {
+    const participantId = asParticipantId("participant_seed_alpha");
+    const outcomes = await Promise.all(
+      Array.from({ length: 12 }, () => repo.consumeSubmissionRateLimit(participantId, NOW, 5, 10_000)),
+    );
+    expect(outcomes.filter(Boolean)).toHaveLength(5);
+    expect(await repo.consumeSubmissionRateLimit(participantId, NOW + 10_000, 5, 10_000)).toBe(true);
   });
 });

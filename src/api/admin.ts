@@ -111,22 +111,24 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
     if (problem === null) throw new ApiError(404, "problem not found");
     const fields = await parseJson(c);
     const nowMs = deps.nowMs?.() ?? Date.now();
-    if (typeof fields.title === "string") problem.title = fields.title;
+    const patch: { title?: string; timeLimitMs?: number; memoryLimitKb?: number; outputLimitBytes?: number } = {};
+    if (typeof fields.title === "string") patch.title = fields.title;
     const limits = fields.limits;
     if (typeof limits === "object" && limits !== null) {
       const record = limits as Record<string, unknown>;
-      if (typeof record.timeLimitMs === "number") problem.limits.timeLimitMs = record.timeLimitMs;
-      if (typeof record.memoryLimitKb === "number") problem.limits.memoryLimitKb = record.memoryLimitKb;
-      if (typeof record.outputLimitBytes === "number") problem.limits.outputLimitBytes = record.outputLimitBytes;
+      if (typeof record.timeLimitMs === "number") patch.timeLimitMs = record.timeLimitMs;
+      if (typeof record.memoryLimitKb === "number") patch.memoryLimitKb = record.memoryLimitKb;
+      if (typeof record.outputLimitBytes === "number") patch.outputLimitBytes = record.outputLimitBytes;
     }
-    problem.updatedAtMs = nowMs;
+    const updated = await repo.updateProblem(problem.id, patch, nowMs);
+    if (updated === null) throw new ApiError(404, "problem not found");
     return c.json({
-      id: problem.id,
-      slug: problem.slug,
-      title: problem.title,
-      lifecycleState: problem.lifecycleState,
-      activeVersion: problem.activeVersion,
-      limits: problem.limits,
+      id: updated.id,
+      slug: updated.slug,
+      title: updated.title,
+      lifecycleState: updated.lifecycleState,
+      activeVersion: updated.activeVersion,
+      limits: updated.limits,
     });
   });
 
@@ -280,8 +282,8 @@ export function adminRoutes(deps: AdminRouteDeps): Hono {
       throw new ApiError(409, "only an ACTIVE problem can be closed");
     }
     const nowMs = deps.nowMs?.() ?? Date.now();
-    problem.lifecycleState = "CLOSED";
-    problem.updatedAtMs = nowMs;
+    const closed = await repo.closeProblem(problem.id, nowMs);
+    if (closed === null) throw new ApiError(409, "problem could not be closed");
     await repo.createAuditLog({
       id: newAuditLogId(),
       actorId: participantIdOf(auth),

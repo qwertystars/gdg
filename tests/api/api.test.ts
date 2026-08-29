@@ -260,6 +260,24 @@ describe("submission lifecycle", () => {
     expect(res.status).toBe(422);
   });
 
+  test("POST /api/v1/submissions rejects an oversized body before JSON parsing", async () => {
+    const c = ctx();
+    const res = await c.app.request("/api/v1/submissions", {
+      method: "POST",
+      headers: { ...bearer(PARTICIPANT_TOKEN), "content-type": "application/json" },
+      body: "x".repeat(1_048_577),
+    });
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "request body too large" });
+  });
+
+  test("API responses disable caching and MIME sniffing", async () => {
+    const c = ctx();
+    const res = await c.app.request("/api/v1/health");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
   test("POST /api/v1/submissions is rate limited to 5 per 10 seconds", async () => {
     const c = ctx();
     for (let i = 0; i < 5; i++) {

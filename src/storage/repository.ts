@@ -111,6 +111,14 @@ export interface Repository {
   }): Promise<ProblemVersionRecord>;
   /** Atomically make an existing, tested version active. */
   activateProblemVersion(problemId: ProblemId, version: number, nowMs: number): Promise<ProblemRecord | null>;
+  /** Persist editable problem metadata and limits. */
+  updateProblem(
+    problemId: ProblemId,
+    patch: { title?: string; timeLimitMs?: number; memoryLimitKb?: number; outputLimitBytes?: number },
+    nowMs: number,
+  ): Promise<ProblemRecord | null>;
+  /** Atomically transition ACTIVE -> CLOSED. */
+  closeProblem(problemId: ProblemId, nowMs: number): Promise<ProblemRecord | null>;
   /** Create a test case row and persist its artifacts via the store. */
   createTestCase(input: {
     id: TestCaseId;
@@ -130,6 +138,13 @@ export interface Repository {
 
   // Submissions -------------------------------------------------------------
   createSubmission(input: CreateSubmissionInput): Promise<SubmissionRecord>;
+  /** Atomically consume one participant submission slot in a fixed time window. */
+  consumeSubmissionRateLimit(
+    participantId: ParticipantId,
+    nowMs: number,
+    limit: number,
+    windowMs: number,
+  ): Promise<boolean>;
   findSubmissionById(id: SubmissionId): Promise<SubmissionRecord | null>;
   listSubmissions(filter: SubmissionListFilter, cursor: string | null, limit: number): Promise<SubmissionList>;
   /** Atomic claim: QUEUED -> RUNNING, or RUNNING with an expired lease. */

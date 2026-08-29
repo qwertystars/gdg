@@ -9,7 +9,7 @@
  * deterministic after enqueue instead of relying on a queue consumer.
  */
 
-import { getSandbox, Sandbox } from "@cloudflare/sandbox";
+import { Sandbox as CloudflareSandbox, getSandbox } from "@cloudflare/sandbox";
 import type { Hono } from "hono";
 import { createApp } from "./api/app";
 import { buildLocalRuntime, type LocalRuntime } from "./api/local-runtime";
@@ -23,7 +23,10 @@ import { JudgeConsumer } from "./judge/consumer";
 import { type D1Like, D1Repository } from "./storage/d1-repository";
 import { R2ArtifactStore } from "./storage/r2-artifact-store";
 
-export { Sandbox };
+/** Participant sandboxes are deny-by-default: submitted code never gets public egress. */
+export class Sandbox extends CloudflareSandbox {
+  override enableInternet = false;
+}
 
 interface SandboxDurableObjectNamespace {
   get(id: string): Sandbox;
