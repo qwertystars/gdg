@@ -167,6 +167,18 @@ long long tree_rss_kb(pid_t root) {
   return total;
 }
 
+long long tree_virtual_kb(pid_t root) {
+  long long total = 0;
+  for (pid_t pid : process_tree(root)) {
+    std::ifstream status("/proc/" + std::to_string(pid) + "/status");
+    std::string line;
+    while (std::getline(status, line)) {
+      if (line.rfind("VmSize:", 0) == 0) { total += std::stoll(line.substr(7)); break; }
+    }
+  }
+  return total;
+}
+
 void kill_tree(pid_t root) {
   const auto tree = process_tree(root);
   for (auto it = tree.rbegin(); it != tree.rend(); ++it) if (*it != root) kill(*it, SIGKILL);
@@ -220,7 +232,10 @@ int main(int argc, char** argv) {
     // exhaust the container's fd table.
     struct rlimit nofile{64, 64};
     setrlimit(RLIMIT_CPU, &cpu);
-    if (o.address_space_limit) setrlimit(RLIMIT_AS, &address);
+    // A delegated cgroup gives authoritative resident-memory enforcement and
+    // an OOM event. RLIMIT_AS is only the fallback: combining both can make
+    // malloc fail before memory.max is reached, hiding an MLE as exit code 1.
+    if (o.address_space_limit && !cgroup.active()) setrlimit(RLIMIT_AS, &address);
     // RLIMIT_NPROC is per real user, not per process tree. In production the
     // root supervisor drops every submission into the dedicated nobody UID,
     // so the limit is isolated. In local non-root development, applying it
@@ -258,12 +273,15 @@ int main(int argc, char** argv) {
   int status = 0;
   struct rusage usage{};
   bool reaped = false, timed_out = false, memory_exceeded = false, output_exceeded = false, process_exceeded = false;
-  long long peak_rss = 0;
+  long long peak_rss = 0, peak_virtual_kb = 0;
   while (!reaped) {
     pid_t waited = wait4(child, &status, WNOHANG, &usage);
     if (waited == child) { reaped = true; break; }
     if (waited < 0 && errno == ECHILD) { reaped = true; break; }
     peak_rss = std::max(peak_rss, cgroup.active() ? cgroup.peak_memory_kb() : tree_rss_kb(getpid()));
+    if (o.address_space_limit && !cgroup.active()) {
+      peak_virtual_kb = std::max(peak_virtual_kb, tree_virtual_kb(getpid()));
+    }
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     if (file_size(o.output) + file_size(o.error) >= o.output_bytes) output_exceeded = true;
     if (peak_rss > o.memory_kb || cgroup.memory_event("oom") || cgroup.memory_event("oom_kill")) memory_exceeded = true;
@@ -276,6 +294,14 @@ int main(int argc, char** argv) {
   if (file_size(o.output) + file_size(o.error) >= o.output_bytes) output_exceeded = true;
   if (WIFSIGNALED(status) && WTERMSIG(status) == SIGXFSZ) output_exceeded = true;
   if (peak_rss > o.memory_kb) memory_exceeded = true;
+  const bool abnormal_exit = !WIFEXITED(status) || WEXITSTATUS(status) != 0;
+  // On the RLIMIT_AS fallback, allocation failure happens just below the
+  // hard ceiling and may surface as bad_alloc/exit(1). Peak VmSize proves the
+  // process exhausted its address-space allowance; ordinary low-memory
+  // runtime errors remain RUNTIME_ERROR.
+  if (o.address_space_limit && !cgroup.active() && abnormal_exit && peak_virtual_kb * 100 >= o.memory_kb * 95) {
+    memory_exceeded = true;
+  }
   kill_group(child, &cgroup); // also remove detached descendants after the main process exits
 
   // As a child subreaper, collect every orphaned descendant so its CPU usage
@@ -301,6 +327,7 @@ int main(int argc, char** argv) {
           << ",\"userCpuTimeNs\":" << (cgroup_cpu_ns > 0 ? cgroup_cpu_ns : ns(usage.ru_utime))
           << ",\"systemCpuTimeNs\":" << (cgroup_cpu_ns > 0 ? 0 : ns(usage.ru_stime))
           << ",\"maxRssKb\":" << peak_rss
+          << ",\"maxVirtualMemoryKb\":" << peak_virtual_kb
           << ",\"timedOut\":" << (timed_out ? "true" : "false")
           << ",\"memoryExceeded\":" << (memory_exceeded ? "true" : "false")
           << ",\"outputExceeded\":" << (output_exceeded ? "true" : "false")

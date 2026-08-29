@@ -141,6 +141,14 @@ describe("local C++17 judge", () => {
     expect(result.cleanup.sandboxDestroyed).toBe(true);
   });
 
+  test("classifies native address-space exhaustion as MEMORY_LIMIT_EXCEEDED", async () => {
+    const source = await Bun.file("scripts/fixtures/demo/sources/memory-overflow.cpp").text();
+    const result = await judge(source, "", "");
+    expect(result.status).toBe("MEMORY_LIMIT_EXCEEDED");
+    expect(result.runs[0]?.metrics.maxRssKb).toBeGreaterThan(0);
+    expect(result.cleanup.remainingProcessIds).toEqual([]);
+  });
+
   test("accounts CPU work performed by participant child processes", async () => {
     const result = await judge(await fixture("forked-work.cpp"));
     expect(result.status).toBe("ACCEPTED");
