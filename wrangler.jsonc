@@ -23,6 +23,11 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-28",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
 
   "triggers": {
     // Repairs the non-transactional D1 -> Queue handoff. Conditional judge
