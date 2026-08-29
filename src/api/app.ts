@@ -36,6 +36,13 @@ export interface AppDeps {
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
+  app.use("*", async (c, next) => {
+    await next();
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Referrer-Policy", "no-referrer");
+    c.header("Cache-Control", "no-store");
+  });
+
   // Wire the judge consumer into the queue: a submission enqueued by the API
   // is judged when the local queue is flushed. Callers may pass their own
   // queue (Cloudflare adapter); the local default judges synchronously.

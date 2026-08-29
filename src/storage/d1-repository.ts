@@ -377,6 +377,39 @@ export class D1Repository implements Repository {
     return this.findProblemById(problemId);
   }
 
+  async updateProblem(
+    problemId: ProblemId,
+    patch: { title?: string; timeLimitMs?: number; memoryLimitKb?: number; outputLimitBytes?: number },
+    nowMs: number,
+  ): Promise<ProblemRecord | null> {
+    const current = await this.findProblemById(problemId);
+    if (!current) return null;
+    await this.db
+      .prepare(
+        `UPDATE problems SET title = ?, time_limit_ms = ?, memory_limit_kb = ?, output_limit_bytes = ?, updated_at = ? WHERE id = ?`,
+      )
+      .bind(
+        patch.title ?? current.title,
+        patch.timeLimitMs ?? current.limits.timeLimitMs,
+        patch.memoryLimitKb ?? current.limits.memoryLimitKb,
+        patch.outputLimitBytes ?? current.limits.outputLimitBytes,
+        iso(nowMs),
+        problemId,
+      )
+      .run();
+    return this.findProblemById(problemId);
+  }
+
+  async closeProblem(problemId: ProblemId, nowMs: number): Promise<ProblemRecord | null> {
+    const result = await this.db
+      .prepare(
+        "UPDATE problems SET lifecycle_state = 'CLOSED', updated_at = ? WHERE id = ? AND lifecycle_state = 'ACTIVE'",
+      )
+      .bind(iso(nowMs), problemId)
+      .run();
+    return result.meta.changes === 1 ? this.findProblemById(problemId) : null;
+  }
+
   async createTestCase(input: {
     id: TestCaseId;
     problemId: ProblemId;
@@ -447,6 +480,26 @@ export class D1Repository implements Repository {
     const created = await this.findSubmissionById(id);
     if (!created) throw new Error("submission insert failed");
     return created;
+  }
+
+  async consumeSubmissionRateLimit(
+    participantId: ParticipantId,
+    nowMs: number,
+    limit: number,
+    windowMs: number,
+  ): Promise<boolean> {
+    const bucketStartMs = Math.floor(nowMs / windowMs) * windowMs;
+    const result = await this.db
+      .prepare(
+        `INSERT INTO submission_rate_limits (participant_id, window_ms, bucket_start_ms, request_count, updated_at)
+         VALUES (?, ?, ?, 1, ?)
+         ON CONFLICT(participant_id, window_ms, bucket_start_ms) DO UPDATE
+         SET request_count = request_count + 1, updated_at = excluded.updated_at
+         WHERE request_count < ?`,
+      )
+      .bind(participantId, windowMs, bucketStartMs, iso(nowMs), limit)
+      .run();
+    return result.meta.changes === 1;
   }
 
   async findSubmissionById(id: SubmissionId): Promise<SubmissionRecord | null> {

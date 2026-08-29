@@ -29,6 +29,7 @@ export const SOURCE_LIMIT_BYTES = 131_072;
 export const RATE_LIMIT_SUBMISSIONS = 5;
 export const RATE_LIMIT_WINDOW_MS = 10_000;
 export const COMPILER_OUTPUT_LIMIT_BYTES = 65_536;
+export const SUBMISSION_BODY_LIMIT_BYTES = 1_048_576;
 
 export interface SubmissionRouteDeps {
   repo: Repository;
@@ -49,7 +50,35 @@ interface SubmissionInput {
 
 async function parseSubmissionBody(c: Context): Promise<SubmissionInput> {
   if (c.req.raw.body === null) throw new ApiError(400, "request body required");
-  const raw = JSON.parse(await c.req.text()) as unknown;
+  const contentLength = Number(c.req.header("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > SUBMISSION_BODY_LIMIT_BYTES) {
+    throw new ApiError(413, "request body too large");
+  }
+  const reader = c.req.raw.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > SUBMISSION_BODY_LIMIT_BYTES) {
+      await reader.cancel();
+      throw new ApiError(413, "request body too large");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    throw new ApiError(400, "request body must be valid UTF-8 JSON");
+  }
   if (typeof raw !== "object" || raw === null) throw new ApiError(400, "request body must be an object");
   const fields = raw as Record<string, unknown>;
   if (typeof fields.problemId !== "string") throw new ApiError(400, "problemId required");
@@ -220,14 +249,7 @@ async function enforceRateLimit(
   rateLimitSubmissions: number,
   rateLimitWindowMs: number,
 ): Promise<void> {
-  const cutoff = nowMs - rateLimitWindowMs;
-  const list = await repo.listSubmissions({ participantId }, null, rateLimitSubmissions);
-  let recent = 0;
-  for (const item of list.items) {
-    if (item.createdAtMs < cutoff) break;
-    recent++;
-  }
-  if (recent >= rateLimitSubmissions) {
+  if (!(await repo.consumeSubmissionRateLimit(participantId, nowMs, rateLimitSubmissions, rateLimitWindowMs))) {
     throw new ApiError(429, "submission rate limit exceeded");
   }
 }

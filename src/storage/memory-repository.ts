@@ -54,6 +54,7 @@ import type {
 import { SUBMISSION_LIST_MAX_PAGE_SIZE } from "./repository";
 
 export class MemoryRepository implements Repository {
+  private readonly submissionRateLimits = new Map<string, number>();
   readonly participants = new Map<string, ParticipantRecord>();
   readonly tokens = new Map<string, ApiTokenRecord>();
   readonly problems = new Map<string, ProblemRecord>();
@@ -234,6 +235,29 @@ export class MemoryRepository implements Repository {
     return problem;
   }
 
+  async updateProblem(
+    problemId: ProblemId,
+    patch: { title?: string; timeLimitMs?: number; memoryLimitKb?: number; outputLimitBytes?: number },
+    nowMs: number,
+  ): Promise<ProblemRecord | null> {
+    const problem = this.problems.get(problemId);
+    if (!problem) return null;
+    if (patch.title !== undefined) problem.title = patch.title;
+    if (patch.timeLimitMs !== undefined) problem.limits.timeLimitMs = patch.timeLimitMs;
+    if (patch.memoryLimitKb !== undefined) problem.limits.memoryLimitKb = patch.memoryLimitKb;
+    if (patch.outputLimitBytes !== undefined) problem.limits.outputLimitBytes = patch.outputLimitBytes;
+    problem.updatedAtMs = nowMs;
+    return problem;
+  }
+
+  async closeProblem(problemId: ProblemId, nowMs: number): Promise<ProblemRecord | null> {
+    const problem = this.problems.get(problemId);
+    if (problem?.lifecycleState !== "ACTIVE") return null;
+    problem.lifecycleState = "CLOSED";
+    problem.updatedAtMs = nowMs;
+    return problem;
+  }
+
   async createTestCase(input: {
     id: TestCaseId;
     problemId: ProblemId;
@@ -310,6 +334,20 @@ export class MemoryRepository implements Repository {
     };
     this.submissions.set(id, record);
     return record;
+  }
+
+  async consumeSubmissionRateLimit(
+    participantId: ParticipantId,
+    nowMs: number,
+    limit: number,
+    windowMs: number,
+  ): Promise<boolean> {
+    const bucket = Math.floor(nowMs / windowMs);
+    const key = `${participantId}:${windowMs}:${bucket}`;
+    const count = this.submissionRateLimits.get(key) ?? 0;
+    if (count >= limit) return false;
+    this.submissionRateLimits.set(key, count + 1);
+    return true;
   }
 
   async findSubmissionById(id: SubmissionId): Promise<SubmissionRecord | null> {
