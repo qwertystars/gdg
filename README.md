@@ -51,9 +51,9 @@ wall-time, memory, process, descriptor, and output caps.
 
 ## Local vs Cloudflare: the adapter boundary
 
-The MVP runs fully locally with no Cloudflare account. Cloudflare bindings
-(D1, R2, Queues, Sandbox/Containers) do not exist in this workspace, so
-the TypeScript code depends on narrow adapter interfaces and the local
+The system runs fully locally with no Cloudflare account. Production bindings
+(D1, R2, Queues, Sandbox/Containers) are configured in `wrangler.jsonc`; the
+TypeScript code depends on narrow adapter interfaces so the local
 implementations behind them. Deploying to Cloudflare swaps the adapters
 without changing domain behavior.
 
