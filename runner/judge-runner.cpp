@@ -29,6 +29,18 @@ struct Options {
   long long wall_ms = 2000, cpu_ms = 1500, memory_kb = 262144, output_bytes = 1048576, max_processes = 16;
 };
 
+struct TrustedFile {
+  int directory_fd = -1;
+  int fd = -1;
+  std::string directory_path;
+  std::string name;
+  dev_t directory_device = 0;
+  ino_t directory_inode = 0;
+  dev_t device = 0;
+  ino_t inode = 0;
+  uid_t owner = 0;
+};
+
 bool value(const std::string& name, int& i, int argc, char** argv, std::string& out) {
   if (name != argv[i] || i + 1 >= argc) return false;
   out = argv[++i];
@@ -59,9 +71,74 @@ bool parse(int argc, char** argv, Options& o) {
   return !o.binary.empty() && !o.input.empty() && !o.output.empty() && !o.error.empty() && !o.metrics.empty();
 }
 
-long long file_size(const std::string& path) {
+long long file_size(int fd) {
   struct stat st{};
-  return stat(path.c_str(), &st) == 0 ? static_cast<long long>(st.st_size) : 0;
+  return fstat(fd, &st) == 0 ? static_cast<long long>(st.st_size) : 0;
+}
+
+std::optional<TrustedFile> open_trusted_file(const std::string& path, bool create) {
+  const std::filesystem::path requested(path);
+  const std::string name = requested.filename().string();
+  if (!requested.is_absolute() || name.empty() || name == "." || name == "..") return std::nullopt;
+
+  const std::string parent = requested.parent_path().string();
+  const int directory_fd = open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (directory_fd < 0) return std::nullopt;
+
+  struct stat directory{};
+  if (fstat(directory_fd, &directory) != 0 || !S_ISDIR(directory.st_mode) || directory.st_uid != geteuid() ||
+      (directory.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+    close(directory_fd);
+    return std::nullopt;
+  }
+
+  const int flags = create ? O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC
+                           : O_RDONLY | O_NOFOLLOW | O_CLOEXEC;
+  const int fd = openat(directory_fd, name.c_str(), flags, 0600);
+  if (fd < 0) {
+    close(directory_fd);
+    return std::nullopt;
+  }
+
+  struct stat opened{};
+  if (fstat(fd, &opened) != 0 || !S_ISREG(opened.st_mode) || opened.st_uid != geteuid() || opened.st_nlink != 1) {
+    close(fd);
+    close(directory_fd);
+    return std::nullopt;
+  }
+  return TrustedFile{directory_fd, fd, parent, name, directory.st_dev, directory.st_ino,
+                     opened.st_dev, opened.st_ino, opened.st_uid};
+}
+
+bool unchanged(const TrustedFile& file) {
+  struct stat current{};
+  struct stat directory{};
+  return lstat(file.directory_path.c_str(), &directory) == 0 && S_ISDIR(directory.st_mode) &&
+         directory.st_uid == file.owner && (directory.st_mode & (S_IWGRP | S_IWOTH)) == 0 &&
+         directory.st_dev == file.directory_device && directory.st_ino == file.directory_inode &&
+         fstat(file.fd, &current) == 0 && S_ISREG(current.st_mode) && current.st_uid == file.owner &&
+         current.st_nlink == 1 && current.st_dev == file.device && current.st_ino == file.inode &&
+         fstatat(file.directory_fd, file.name.c_str(), &current, AT_SYMLINK_NOFOLLOW) == 0 &&
+         S_ISREG(current.st_mode) && current.st_uid == file.owner && current.st_nlink == 1 &&
+         current.st_dev == file.device && current.st_ino == file.inode;
+}
+
+void close_file(TrustedFile& file) {
+  if (file.fd >= 0) close(file.fd);
+  if (file.directory_fd >= 0) close(file.directory_fd);
+  file.fd = -1;
+  file.directory_fd = -1;
+}
+
+bool write_all(int fd, const std::string& value) {
+  size_t written = 0;
+  while (written < value.size()) {
+    const ssize_t count = write(fd, value.data() + written, value.size() - written);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) return false;
+    written += static_cast<size_t>(count);
+  }
+  return true;
 }
 
 bool write_text(const std::string& path, const std::string& value) {
@@ -205,6 +282,11 @@ int main(int argc, char** argv) {
   }
   Options o;
   if (!parse(argc, argv, o)) return 2;
+  auto input = open_trusted_file(o.input, false);
+  auto output = open_trusted_file(o.output, true);
+  auto error = open_trusted_file(o.error, true);
+  auto metrics = open_trusted_file(o.metrics, true);
+  if (!input || !output || !error || !metrics) return 4;
   const auto started = std::chrono::steady_clock::now();
   prctl(PR_SET_CHILD_SUBREAPER, 1);
   ExecutionCgroup cgroup(o);
@@ -217,12 +299,14 @@ int main(int argc, char** argv) {
     prctl(PR_SET_PDEATHSIG, SIGKILL);
     if (getppid() == 1) _exit(125);
     if (cgroup.active() && !cgroup.attach_self()) _exit(125);
-    int in = open(o.input.c_str(), O_RDONLY);
-    int out = open(o.output.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    int err = open(o.error.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (in < 0 || out < 0 || err < 0) _exit(125);
-    dup2(in, STDIN_FILENO); dup2(out, STDOUT_FILENO); dup2(err, STDERR_FILENO);
-    close(in); close(out); close(err);
+    if (dup2(input->fd, STDIN_FILENO) < 0 || dup2(output->fd, STDOUT_FILENO) < 0 ||
+        dup2(error->fd, STDERR_FILENO) < 0) {
+      _exit(125);
+    }
+    close_file(*input);
+    close_file(*output);
+    close_file(*error);
+    close_file(*metrics);
     struct rlimit cpu{static_cast<rlim_t>(std::max(1LL, (o.cpu_ms + 999) / 1000)), static_cast<rlim_t>(std::max(2LL, (o.cpu_ms + 1999) / 1000))};
     struct rlimit address{static_cast<rlim_t>(o.memory_kb * 1024), static_cast<rlim_t>(o.memory_kb * 1024)};
     struct rlimit nproc{static_cast<rlim_t>(o.max_processes), static_cast<rlim_t>(o.max_processes)};
@@ -283,7 +367,7 @@ int main(int argc, char** argv) {
       peak_virtual_kb = std::max(peak_virtual_kb, tree_virtual_kb(getpid()));
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
-    if (file_size(o.output) + file_size(o.error) >= o.output_bytes) output_exceeded = true;
+    if (file_size(output->fd) + file_size(error->fd) >= o.output_bytes) output_exceeded = true;
     if (peak_rss > o.memory_kb || cgroup.memory_event("oom") || cgroup.memory_event("oom_kill")) memory_exceeded = true;
     if (static_cast<long long>(process_tree(getpid()).size()) - 1 > o.max_processes) process_exceeded = true;
     if (elapsed > o.wall_ms) timed_out = true;
@@ -291,7 +375,7 @@ int main(int argc, char** argv) {
     else usleep(1000);
   }
   peak_rss = std::max(peak_rss, std::max(static_cast<long long>(usage.ru_maxrss), cgroup.peak_memory_kb()));
-  if (file_size(o.output) + file_size(o.error) >= o.output_bytes) output_exceeded = true;
+  if (file_size(output->fd) + file_size(error->fd) >= o.output_bytes) output_exceeded = true;
   if (WIFSIGNALED(status) && WTERMSIG(status) == SIGXFSZ) output_exceeded = true;
   if (peak_rss > o.memory_kb) memory_exceeded = true;
   const bool abnormal_exit = !WIFEXITED(status) || WEXITSTATUS(status) != 0;
@@ -321,8 +405,8 @@ int main(int argc, char** argv) {
   else if (memory_exceeded) classification = "MEMORY_LIMIT_EXCEEDED";
   else if (output_exceeded) classification = "OUTPUT_LIMIT_EXCEEDED";
   else if (process_exceeded || !WIFEXITED(status) || WEXITSTATUS(status) != 0) classification = "RUNTIME_ERROR";
-  std::ofstream metrics(o.metrics);
-  metrics << "{\"exitCode\":" << (WIFEXITED(status) ? std::to_string(WEXITSTATUS(status)) : "null")
+  std::ostringstream payload;
+  payload << "{\"exitCode\":" << (WIFEXITED(status) ? std::to_string(WEXITSTATUS(status)) : "null")
           << ",\"signal\":" << (WIFSIGNALED(status) ? std::to_string(WTERMSIG(status)) : "null")
           << ",\"wallTimeNs\":" << std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()
           << ",\"userCpuTimeNs\":" << (cgroup_cpu_ns > 0 ? cgroup_cpu_ns : ns(usage.ru_utime))
@@ -335,5 +419,11 @@ int main(int argc, char** argv) {
           << ",\"processLimitExceeded\":" << (process_exceeded ? "true" : "false")
           << ",\"resourceAccounting\":\"" << (cgroup.active() ? "cgroup-v2" : "rlimit-proc-fallback") << "\""
           << ",\"classification\":\"" << classification << "\"}\n";
-  return 0;
+  const bool written = write_all(metrics->fd, payload.str());
+  const bool intact = unchanged(*input) && unchanged(*output) && unchanged(*error) && unchanged(*metrics);
+  close_file(*input);
+  close_file(*output);
+  close_file(*error);
+  close_file(*metrics);
+  return written && intact ? 0 : 5;
 }

@@ -39,5 +39,10 @@ describe("judge-runner trust boundary", () => {
     expect(source).toContain("pids.max");
     expect(source).toContain("cgroup.kill");
     expect(source).toContain("cpu.stat");
+    expect(source).toContain("openat");
+    expect(source).toContain("O_NOFOLLOW");
+    expect(source).toContain("O_EXCL");
+    expect(source).toContain("fstatat");
+    expect(source).toContain("lstat");
   });
 });

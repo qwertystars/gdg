@@ -12,6 +12,7 @@ RUN apt-get update \
 COPY runner/judge-runner.cpp runner/Makefile /tmp/runner/
 RUN make -C /tmp/runner \
     && install -m 0755 /tmp/runner/judge-runner /usr/local/bin/judge-runner \
+    && install -d -o root -g root -m 0700 /run/gdg-judge \
     && rm -rf /tmp/runner
 
 # Do NOT override `user` or `workdir`: the sandbox base runs /sandbox from

@@ -12,9 +12,12 @@ const normalMetrics = JSON.stringify({
   userCpuTimeNs: 1,
   systemCpuTimeNs: 0,
   maxRssKb: 1,
+  maxVirtualMemoryKb: 1,
   timedOut: false,
   memoryExceeded: false,
   outputExceeded: false,
+  processLimitExceeded: false,
+  resourceAccounting: "cgroup-v2",
   classification: "NORMAL",
 });
 
@@ -67,6 +70,63 @@ describe("CloudflareSandboxJudge execution environment", () => {
       });
     }
   });
+
+  test.each(["", "{}", JSON.stringify({ ...JSON.parse(normalMetrics), userCpuTimeNs: 0 })])(
+    "fails closed when trusted metrics are missing, malformed, or implausibly zero",
+    async (metricsBody) => {
+      const sandbox = {
+        writeFile: async (): Promise<void> => {},
+        exec: async (command: string) => {
+          if (command.includes("judge-runner")) {
+            return { success: true, stdout: "", stderr: "", exitCode: 0 };
+          }
+          if (command.includes("compile.metrics.json")) {
+            return { success: true, stdout: metricsBody, stderr: "", exitCode: 0 };
+          }
+          return { success: true, stdout: "42\n", stderr: "", exitCode: 0 };
+        },
+        destroy: async (): Promise<void> => {},
+      };
+      const judge = new CloudflareSandboxJudge({ getSandbox: () => sandbox });
+
+      const result = await judge.judge(
+        { source: "int main() {}", correctness: [{ id: "t", input: "1\n", expected: "1\n" }], limits },
+        "sbx-invalid-metrics",
+      );
+
+      expect(result.status).toBe("JUDGE_ERROR");
+      expect(result.performanceScoreNs).toBeUndefined();
+    },
+  );
+
+  test("does not synthesize NORMAL zero metrics when a run metrics file is unreadable", async () => {
+    const sandbox = {
+      writeFile: async (): Promise<void> => {},
+      exec: async (command: string) => {
+        if (command.includes("judge-runner")) {
+          return { success: true, stdout: "", stderr: "", exitCode: 0 };
+        }
+        if (command.includes("compile.metrics.json")) {
+          return { success: true, stdout: normalMetrics, stderr: "", exitCode: 0 };
+        }
+        if (command.includes("metrics-t.json")) {
+          return { success: false, stdout: "", stderr: "missing", exitCode: 1 };
+        }
+        return { success: true, stdout: "1\n", stderr: "", exitCode: 0 };
+      },
+      destroy: async (): Promise<void> => {},
+    };
+    const judge = new CloudflareSandboxJudge({ getSandbox: () => sandbox });
+
+    const result = await judge.judge(
+      { source: "int main() {}", correctness: [{ id: "t", input: "1\n", expected: "1\n" }], limits },
+      "sbx-missing-run-metrics",
+    );
+
+    expect(result.status).toBe("JUDGE_ERROR");
+    expect(result.performanceScoreNs).toBeUndefined();
+    expect(result.peakMemoryKb).toBe(0);
+  });
 });
 
 describe("CloudflareSandboxJudge language commands", () => {
@@ -94,9 +154,12 @@ describe("CloudflareSandboxJudge language commands", () => {
               userCpuTimeNs: 1,
               systemCpuTimeNs: 0,
               maxRssKb: 1,
+              maxVirtualMemoryKb: 1,
               timedOut: false,
               memoryExceeded: false,
               outputExceeded: false,
+              processLimitExceeded: false,
+              resourceAccounting: "cgroup-v2",
               classification: "NORMAL",
             }),
             stderr: "",
@@ -127,6 +190,12 @@ describe("CloudflareSandboxJudge language commands", () => {
     expect(commands.some((command) => command.includes(compiler))).toBe(true);
     expect(commands.some((command) => command.includes("judge-runner") && command.includes(compiler))).toBe(true);
     expect(commands.some((command) => command.includes(memoryFlag))).toBe(true);
+    expect(commands.some((command) => command.includes("install") && command.includes("0700"))).toBe(true);
+    expect(
+      commands
+        .filter((command) => command.includes("judge-runner"))
+        .every((command) => command.includes("/run/gdg-judge/")),
+    ).toBe(true);
     expect(commands.every((command) => !command.includes(hostileSource))).toBe(true);
   });
 });

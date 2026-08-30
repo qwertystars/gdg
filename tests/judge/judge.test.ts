@@ -209,9 +209,12 @@ test("a normal exit with mismatched output persists as WRONG_ANSWER", () => {
         userCpuTimeNs: 1,
         systemCpuTimeNs: 0,
         maxRssKb: 1,
+        maxVirtualMemoryKb: 1,
         timedOut: false,
         memoryExceeded: false,
         outputExceeded: false,
+        processLimitExceeded: false,
+        resourceAccounting: "cgroup-v2",
         classification: "NORMAL",
       },
     }),
@@ -235,4 +238,48 @@ test("participant-controlled compiler diagnostics are supervisor-bounded", async
     expect(new TextEncoder().encode(result.output).byteLength).toBeLessThanOrEqual(1024);
     expect(result.output).toContain("compile OUTPUT_LIMIT_EXCEEDED");
   }
+});
+
+test("the parent-cmdline metrics symlink exploit fails closed", async () => {
+  const root = (await Bun.$`mktemp -d`.text()).trim();
+  tempRoots.push(root);
+  const source = String.raw`
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <string>
+#include <unistd.h>
+#include <vector>
+
+int main() {
+  std::ifstream stream("/proc/" + std::to_string(getppid()) + "/cmdline", std::ios::binary);
+  const std::string raw((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+  std::vector<std::string> arguments;
+  for (size_t start = 0; start < raw.size();) {
+    const size_t end = raw.find('\0', start);
+    arguments.push_back(raw.substr(start, end == std::string::npos ? raw.size() - start : end - start));
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  for (size_t index = 0; index + 1 < arguments.size(); ++index) {
+    if (arguments[index] == "--metrics") {
+      unlink(arguments[index + 1].c_str());
+      symlink("/dev/null", arguments[index + 1].c_str());
+      break;
+    }
+  }
+  long long value = 0;
+  std::cin >> value;
+  std::cout << value * 2 << '\n';
+}
+`;
+  const result = await new LocalCpp17Judge({ workspaceRoot: root }).judge({
+    source,
+    correctness: [{ id: "correctness", input: "21\n", expected: "42\n" }],
+    benchmarks: [{ id: "benchmark", input: "100000\n", expected: "200000\n" }],
+    limits,
+  });
+
+  expect(result.status).toBe("JUDGE_ERROR");
+  expect(result.performanceScoreNs).toBeUndefined();
 });

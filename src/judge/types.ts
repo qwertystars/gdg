@@ -43,10 +43,12 @@ export interface JudgeRunMetrics {
   userCpuTimeNs: number;
   systemCpuTimeNs: number;
   maxRssKb: number;
+  maxVirtualMemoryKb: number;
   timedOut: boolean;
   memoryExceeded: boolean;
   outputExceeded: boolean;
-  processLimitExceeded?: boolean;
+  processLimitExceeded: boolean;
+  resourceAccounting: "cgroup-v2" | "rlimit-proc-fallback";
   classification: RunClassification;
 }
 

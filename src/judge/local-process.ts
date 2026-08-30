@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { SubmissionLanguage } from "../domain/enums";
 import { languageDefinition } from "./languages";
+import { parseTrustedMetrics } from "./metrics";
 import type {
   CompileLimits,
   CompilerAdapter,
@@ -112,10 +113,13 @@ export class LocalCpp17Compiler implements CompilerAdapter {
     await Bun.write(sourcePath, source);
     const compile = definition.compile(sourcePath, binaryPath);
     const runner = await ensureRunner(dirname(workspace));
-    const inputPath = join(workspace, "compile.stdin");
-    const stdoutPath = join(workspace, "compile.stdout");
-    const stderrPath = join(workspace, "compile.stderr");
-    const metricsPath = join(workspace, "compile.metrics.json");
+    const trustedWorkspace = join(dirname(workspace), "trusted-compile");
+    await mkdir(trustedWorkspace, { recursive: true, mode: 0o700 });
+    await chmod(trustedWorkspace, 0o700);
+    const inputPath = join(trustedWorkspace, "compile.stdin");
+    const stdoutPath = join(trustedWorkspace, "compile.stdout");
+    const stderrPath = join(trustedWorkspace, "compile.stderr");
+    const metricsPath = join(trustedWorkspace, "compile.metrics.json");
     await Bun.write(inputPath, "");
     const child = spawn(
       runner,
@@ -146,14 +150,12 @@ export class LocalCpp17Compiler implements CompilerAdapter {
       ],
       { cwd: workspace, detached: true, stdio: "ignore" },
     );
-    await new Promise<void>((resolve, reject) => {
+    const supervisor = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       child.once("error", reject);
-      child.once("close", () => resolve());
+      child.once("close", (code, signal) => resolve({ code, signal }));
     });
-    const metrics = JSON.parse(await readFile(metricsPath, "utf8")) as {
-      exitCode: number | null;
-      classification: string;
-    };
+    if (supervisor.code !== 0 || supervisor.signal !== null) throw new Error("compile supervisor failed");
+    const metrics = parseTrustedMetrics(await readFile(metricsPath, "utf8"));
     const output = `${await readBounded(stdoutPath, limits.outputBytes)}${await readBounded(
       stderrPath,
       limits.outputBytes,
@@ -225,11 +227,12 @@ export class LocalProcessExecutionAdapter implements ProcessExecutionAdapter {
     const child = spawn(runner, args, { cwd: this.workspace, detached: true, stdio: "ignore" });
     if (!child.pid) throw new Error("judge-runner did not start");
     this.active.add(child.pid);
-    await new Promise<void>((resolve, reject) => {
+    const supervisor = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       child.once("error", reject);
-      child.once("close", () => resolve());
+      child.once("close", (code, signal) => resolve({ code, signal }));
     }).finally(() => this.active.delete(child.pid!));
-    const metrics = JSON.parse(await readFile(spec.metricsPath, "utf8"));
+    if (supervisor.code !== 0 || supervisor.signal !== null) throw new Error("execution supervisor failed");
+    const metrics = parseTrustedMetrics(await readFile(spec.metricsPath, "utf8"));
     return {
       stdout: await readBounded(spec.stdoutPath, spec.limits.outputBytes),
       stderr: await readBounded(spec.stderrPath, spec.limits.outputBytes),
@@ -274,7 +277,9 @@ export class LocalSandboxAdapter implements SandboxAdapter {
   }
 
   async create(id: string, root: string): Promise<SandboxSession> {
-    await mkdir(root, { recursive: true });
-    return new LocalSandboxSession(id, root, this.processes);
+    const trustedRoot = join(root, "trusted-run");
+    await mkdir(trustedRoot, { recursive: true, mode: 0o700 });
+    await chmod(trustedRoot, 0o700);
+    return new LocalSandboxSession(id, trustedRoot, this.processes);
   }
 }
