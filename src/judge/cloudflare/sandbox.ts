@@ -10,6 +10,7 @@
 import type { SubmissionLanguage } from "../../domain/enums";
 import { compareOutput } from "../comparator";
 import { type CommandSpec, languageDefinition } from "../languages";
+import { parseTrustedMetrics } from "../metrics";
 import { medianInteger, scoreBenchmarks } from "../scoring";
 import type {
   BenchmarkResult,
@@ -78,15 +79,6 @@ function statusForRun(classification: RunClassification): JudgeStatus {
   }
 }
 
-function classificationOf(result: { success: boolean; stderr: string; exitCode: number }): RunClassification {
-  if (!result.success) return "RUNTIME_ERROR";
-  if (result.exitCode !== 0) return "RUNTIME_ERROR";
-  if (result.stderr.includes("TIME_LIMIT_EXCEEDED")) return "TIME_LIMIT_EXCEEDED";
-  if (result.stderr.includes("MEMORY_LIMIT_EXCEEDED")) return "MEMORY_LIMIT_EXCEEDED";
-  if (result.stderr.includes("OUTPUT_LIMIT_EXCEEDED")) return "OUTPUT_LIMIT_EXCEEDED";
-  return "NORMAL";
-}
-
 /** Quote only trusted server-owned command arguments for the stable SDK shell surface. */
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -104,8 +96,10 @@ export class CloudflareSandboxJudge {
   }
 
   async judge(request: JudgeRequest, sandboxId: string): Promise<JudgeResult> {
+    if (!/^[a-zA-Z0-9_-]+$/.test(sandboxId)) throw new Error("invalid sandbox id");
     const sandbox = this.deps.getSandbox(sandboxId);
     const workspace = `/workspace/${sandboxId}`;
+    const trustedWorkspace = `/run/gdg-judge/${sandboxId}`;
     const runs: JudgeRun[] = [];
     const benchmarks: BenchmarkResult[] = [];
     let status: JudgeStatus = "JUDGE_ERROR";
@@ -119,14 +113,23 @@ export class CloudflareSandboxJudge {
       const language = request.language ?? "cpp17";
       const definition = languageDefinition(language);
       await this.withStartupRetry(() =>
-        sandbox.exec(shellCommand({ command: "mkdir", args: ["-p", workspace] }), { env: JUDGE_EXEC_ENV }),
+        this.execChecked(sandbox, shellCommand({ command: "mkdir", args: ["-p", workspace] })),
       );
       await this.withStartupRetry(() =>
-        sandbox.exec(shellCommand({ command: "chmod", args: ["0777", workspace] }), { env: JUDGE_EXEC_ENV }),
+        this.execChecked(sandbox, shellCommand({ command: "chmod", args: ["0777", workspace] })),
+      );
+      await this.withStartupRetry(() =>
+        this.execChecked(
+          sandbox,
+          shellCommand({
+            command: "install",
+            args: ["-d", "-o", "root", "-g", "root", "-m", "0700", trustedWorkspace],
+          }),
+        ),
       );
       await this.withStartupRetry(() => sandbox.writeFile(`${workspace}/${definition.sourceFile}`, request.source));
       const compiled = await this.withStartupRetry(() =>
-        this.compile(sandbox, workspace, language, request.compileLimits ?? DEFAULT_COMPILE_LIMITS),
+        this.compile(sandbox, workspace, trustedWorkspace, language, request.compileLimits ?? DEFAULT_COMPILE_LIMITS),
       );
       if (!compiled.ok) {
         status = "COMPILE_ERROR";
@@ -137,7 +140,7 @@ export class CloudflareSandboxJudge {
           const run = await this.withStartupRetry(() =>
             this.runOne(
               sandbox,
-              workspace,
+              trustedWorkspace,
               compiled.program,
               compiled.memoryAccounting,
               test.id,
@@ -165,7 +168,7 @@ export class CloudflareSandboxJudge {
             await this.withStartupRetry(() =>
               this.runOne(
                 sandbox,
-                workspace,
+                trustedWorkspace,
                 compiled.program,
                 compiled.memoryAccounting,
                 `${test.id}-warmup`,
@@ -179,7 +182,7 @@ export class CloudflareSandboxJudge {
               const run = await this.withStartupRetry(() =>
                 this.runOne(
                   sandbox,
-                  workspace,
+                  trustedWorkspace,
                   compiled.program,
                   compiled.memoryAccounting,
                   `${test.id}-${runNumber + 1}`,
@@ -244,9 +247,15 @@ export class CloudflareSandboxJudge {
     throw lastError;
   }
 
+  private async execChecked(sandbox: SandboxLike, command: string): Promise<void> {
+    const result = await sandbox.exec(command, { env: JUDGE_EXEC_ENV });
+    if (!result.success || result.exitCode !== 0) throw new Error("trusted sandbox setup failed");
+  }
+
   private async compile(
     sandbox: SandboxLike,
     workspace: string,
+    trustedWorkspace: string,
     language: SubmissionLanguage,
     limits: CompileLimits,
   ): Promise<
@@ -256,9 +265,11 @@ export class CloudflareSandboxJudge {
     const sourcePath = `${workspace}/${definition.sourceFile}`;
     const outputPath = `${workspace}/submission`;
     const compile = definition.compile(sourcePath, outputPath);
-    const stdoutPath = `${workspace}/compile.stdout`;
-    const stderrPath = `${workspace}/compile.stderr`;
-    const metricsPath = `${workspace}/compile.metrics.json`;
+    const inputPath = `${trustedWorkspace}/compile.stdin`;
+    const stdoutPath = `${trustedWorkspace}/compile.stdout`;
+    const stderrPath = `${trustedWorkspace}/compile.stderr`;
+    const metricsPath = `${trustedWorkspace}/compile.metrics.json`;
+    await sandbox.writeFile(inputPath, "");
     const runnerCommand = shellCommand({
       command: "judge-runner",
       args: [
@@ -268,7 +279,7 @@ export class CloudflareSandboxJudge {
         "--memory-accounting",
         definition.memoryAccounting,
         "--input",
-        "/dev/null",
+        inputPath,
         "--stdout",
         stdoutPath,
         "--stderr",
@@ -292,16 +303,16 @@ export class CloudflareSandboxJudge {
       env: JUDGE_EXEC_ENV,
     });
     if (!result.success || result.exitCode !== 0) throw new Error("compile supervisor failed");
-    const [metricsResult, stdoutResult, stderrResult] = await Promise.all([
-      sandbox.exec(shellCommand({ command: "cat", args: [metricsPath] }), { env: JUDGE_EXEC_ENV }),
-      sandbox.exec(shellCommand({ command: "cat", args: [stdoutPath] }), { env: JUDGE_EXEC_ENV }),
-      sandbox.exec(shellCommand({ command: "cat", args: [stderrPath] }), { env: JUDGE_EXEC_ENV }),
+    const [metricsRaw, stdout, stderr] = await Promise.all([
+      this.readSandboxFile(sandbox, metricsPath),
+      this.readSandboxFile(sandbox, stdoutPath),
+      this.readSandboxFile(sandbox, stderrPath),
     ]);
-    const metrics = JSON.parse(metricsResult.stdout) as { exitCode: number | null; classification: RunClassification };
+    const metrics = parseTrustedMetrics(metricsRaw);
     if (metrics.classification !== "NORMAL" || metrics.exitCode !== 0) {
       const suffix = metrics.classification === "NORMAL" ? "" : `\n[compile ${metrics.classification}]`;
       const cap = Math.min(limits.outputBytes, COMPILER_OUTPUT_LIMIT_BYTES);
-      const diagnostics = `${stdoutResult.stdout}\n${stderrResult.stdout}`.trim();
+      const diagnostics = `${stdout}\n${stderr}`.trim();
       const output = `${diagnostics.slice(0, Math.max(0, cap - suffix.length))}${suffix}`;
       return { ok: false, output };
     }
@@ -314,7 +325,7 @@ export class CloudflareSandboxJudge {
 
   private async runOne(
     sandbox: SandboxLike,
-    workspace: string,
+    trustedWorkspace: string,
     program: CommandSpec,
     memoryAccounting: "address-space" | "rss",
     testId: string,
@@ -323,10 +334,10 @@ export class CloudflareSandboxJudge {
     limits: JudgeLimits,
   ): Promise<JudgeRun> {
     const safeId = testId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const inputPath = `${workspace}/input-${safeId}.txt`;
-    const stdoutPath = `${workspace}/stdout-${safeId}.txt`;
-    const stderrPath = `${workspace}/stderr-${safeId}.txt`;
-    const metricsPath = `${workspace}/metrics-${safeId}.json`;
+    const inputPath = `${trustedWorkspace}/input-${safeId}.txt`;
+    const stdoutPath = `${trustedWorkspace}/stdout-${safeId}.txt`;
+    const stderrPath = `${trustedWorkspace}/stderr-${safeId}.txt`;
+    const metricsPath = `${trustedWorkspace}/metrics-${safeId}.json`;
     await sandbox.writeFile(inputPath, input);
     const runnerCommand = shellCommand({
       command: "judge-runner",
@@ -357,46 +368,8 @@ export class CloudflareSandboxJudge {
       ],
     });
     const result = await sandbox.exec(runnerCommand, { timeout: limits.wallTimeMs + 5000, env: JUDGE_EXEC_ENV });
-    let metrics: {
-      exitCode: number | null;
-      signal: number | null;
-      wallTimeNs: number;
-      userCpuTimeNs: number;
-      systemCpuTimeNs: number;
-      maxRssKb: number;
-      timedOut: boolean;
-      memoryExceeded: boolean;
-      outputExceeded: boolean;
-      classification: RunClassification;
-    };
-    try {
-      const parsed = JSON.parse(await this.readSandboxFile(sandbox, metricsPath));
-      metrics = {
-        exitCode: parsed.exitCode ?? null,
-        signal: parsed.signal ?? null,
-        wallTimeNs: parsed.wallTimeNs ?? 0,
-        userCpuTimeNs: parsed.userCpuTimeNs ?? 0,
-        systemCpuTimeNs: parsed.systemCpuTimeNs ?? 0,
-        maxRssKb: parsed.maxRssKb ?? 0,
-        timedOut: parsed.timedOut ?? false,
-        memoryExceeded: parsed.memoryExceeded ?? false,
-        outputExceeded: parsed.outputExceeded ?? false,
-        classification: (parsed.classification ?? "NORMAL") as RunClassification,
-      };
-    } catch {
-      metrics = {
-        exitCode: result.exitCode,
-        signal: null,
-        wallTimeNs: 0,
-        userCpuTimeNs: 0,
-        systemCpuTimeNs: 0,
-        maxRssKb: 0,
-        timedOut: false,
-        memoryExceeded: false,
-        outputExceeded: false,
-        classification: classificationOf(result),
-      };
-    }
+    if (!result.success || result.exitCode !== 0) throw new Error("execution supervisor failed");
+    const metrics = parseTrustedMetrics(await this.readSandboxFile(sandbox, metricsPath));
     const stdout =
       metrics.classification === "OUTPUT_LIMIT_EXCEEDED" ? "" : await this.readSandboxFile(sandbox, stdoutPath);
     const stderr = await this.readSandboxFile(sandbox, stderrPath);
@@ -406,11 +379,8 @@ export class CloudflareSandboxJudge {
   }
 
   private async readSandboxFile(sandbox: SandboxLike, path: string): Promise<string> {
-    try {
-      const result = await sandbox.exec(`cat ${path}`, { env: JUDGE_EXEC_ENV });
-      return result.success ? result.stdout : "";
-    } catch {
-      return "";
-    }
+    const result = await sandbox.exec(shellCommand({ command: "cat", args: [path] }), { env: JUDGE_EXEC_ENV });
+    if (!result.success || result.exitCode !== 0) throw new Error("trusted judge artifact missing");
+    return result.stdout;
   }
 }

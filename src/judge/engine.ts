@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupAttempt } from "./cleanup";
@@ -61,6 +61,9 @@ export class LocalCpp17Judge {
   async judge(request: JudgeRequest): Promise<JudgeResult> {
     const root = this.workspaceRoot ?? requestRoot();
     await mkdir(root, { recursive: true });
+    // The participant can traverse to its 0777 build directory, while all
+    // trusted run artifacts live below separate 0700 directories.
+    await chmod(root, 0o711);
     const processes = this.processAdapterFactory(root);
     const sandboxAdapter = this.sandboxAdapterFactory(processes);
     let sandbox: SandboxSession | undefined;
@@ -89,7 +92,6 @@ export class LocalCpp17Judge {
             compiled.binaryPath,
             compiled.args,
             compiled.memoryAccounting,
-            root,
             test.id,
             test.input,
             test.expected,
@@ -117,7 +119,6 @@ export class LocalCpp17Judge {
               compiled.binaryPath,
               compiled.args,
               compiled.memoryAccounting,
-              root,
               `${test.id}-warmup`,
               test.input,
               test.expected,
@@ -130,7 +131,6 @@ export class LocalCpp17Judge {
                 compiled.binaryPath,
                 compiled.args,
                 compiled.memoryAccounting,
-                root,
                 `${test.id}-${runNumber + 1}`,
                 test.input,
                 test.expected,
@@ -176,7 +176,6 @@ export class LocalCpp17Judge {
     binaryPath: string,
     args: string[],
     memoryAccounting: "address-space" | "rss",
-    root: string,
     testId: string,
     input: string,
     expected: string,
@@ -184,11 +183,11 @@ export class LocalCpp17Judge {
   ): Promise<JudgeRun> {
     const safeId = testId.replace(/[^a-zA-Z0-9_-]/g, "_");
     const inputPath = await sandbox.writeFile(`input/${safeId}.txt`, input);
-    const stdoutPath = join(root, "output", `${safeId}.stdout`);
-    const stderrPath = join(root, "output", `${safeId}.stderr`);
-    const metricsPath = join(root, "metrics", `${safeId}.json`);
-    await mkdir(join(root, "output"), { recursive: true });
-    await mkdir(join(root, "metrics"), { recursive: true });
+    const stdoutPath = join(sandbox.root, "output", `${safeId}.stdout`);
+    const stderrPath = join(sandbox.root, "output", `${safeId}.stderr`);
+    const metricsPath = join(sandbox.root, "metrics", `${safeId}.json`);
+    await mkdir(join(sandbox.root, "output"), { recursive: true, mode: 0o700 });
+    await mkdir(join(sandbox.root, "metrics"), { recursive: true, mode: 0o700 });
     const execution = await sandbox.execute({
       binaryPath,
       args,
